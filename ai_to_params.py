@@ -230,7 +230,7 @@ def identify_and_extract_ligands(structure: Structure, use_clean_names: bool = F
                     counter = 2
                     base_name = sanitized_name
                     while sanitized_name in used_names:
-                            if len(base_name) == 3:
+                        if len(base_name) == 3:
                             sanitized_name = base_name[:2] + str(counter)
                         else:
                             sanitized_name = base_name + str(counter)
