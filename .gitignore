@@ -1,0 +1,32 @@
+# Keep molfile_to_params.py untracked
+molfile_to_params.py
+
+# Keep Claude/Gemini markdown files untracked
+*claude*.md
+*gemini*.md
+*Claude*.md
+*Gemini*.md
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
