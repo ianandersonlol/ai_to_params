@@ -6,7 +6,9 @@ Extracted for reuse in ai_to_params.py
 Functions and utilities for taking ligands and creating Rosetta .params files.
 Contains the core chemical parameterization logic without the main() interface.
 
-Author: Extracted from Ian W. Davis molfile_to_params.py
+Original Author: Ian W. Davis
+Extracted and adapted from molfile_to_params.py for CIF processing.
+Many thanks to Ian W. Davis for developing the comprehensive Rosetta parameterization framework.
 """
 import os
 import sys

@@ -9,7 +9,8 @@ identifies unique ligand molecules, infers their bonds, and generates Rosetta
 Usage:
     python ai_to_params.py -cif input.cif -prefix output_prefix [--clobber]
 
-Author: Generated for processing AI modeling outputs
+Based on the original molfile_to_params.py by Ian W. Davis.
+Many thanks to Ian W. Davis for the foundational parameterization algorithms.
 """
 
 import os
