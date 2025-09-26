@@ -20,7 +20,6 @@ import math
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Set
 
-# Import BioPython for CIF parsing
 try:
     from Bio.PDB import MMCIFParser, Structure, Model, Chain, Residue, Atom
     from Bio.PDB.Atom import Atom as BioPythonAtom
@@ -30,7 +29,6 @@ except ImportError:
     print("Please install it with: pip install biopython")
     sys.exit(1)
 
-# Import our utility functions
 try:
     from rosetta_params_utils import *
 except ImportError as e:
@@ -38,14 +36,12 @@ except ImportError as e:
     print("Make sure rosetta_params_utils.py is available")
     sys.exit(1)
 
-# Covalent radii dictionary for bond inference (in Angstroms)
 COVALENT_RADII = {
     'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'P': 1.07, 'S': 1.05,
     'F': 0.57, 'CL': 0.99, 'BR': 1.14, 'I': 1.33, 'MG': 1.41, 'CA': 1.76,
     'ZN': 1.22, 'FE': 1.32, 'K': 2.03, 'NA': 1.66
 }
 
-# Common solvent molecules and metal ions to ignore
 IGNORE_RESIDUES = {'HOH', 'WAT', 'SO4', 'PO4', 'CL'}
 
 @dataclass
