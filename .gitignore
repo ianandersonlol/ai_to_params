@@ -1,6 +1,9 @@
 # Keep molfile_to_params.py untracked
 molfile_to_params.py
 
+# CIF files (test data and user input)
+*.cif
+
 # Keep Claude/Gemini markdown files untracked
 *claude*.md
 *gemini*.md
