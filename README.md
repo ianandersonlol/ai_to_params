@@ -64,7 +64,7 @@ The tool generates several output files for each ligand found:
 ### File Naming Strategy
 - **Filenames** use original ligand names from the CIF file (user-friendly)
 - **Internal residue codes** use systematic names (L01, L02, etc.) for Rosetta consistency
-- Use `--clean-names` to use cleaned original names instead of systematic names
+- Use `--clean-names` to use cleaned original names instead of systematic names. please note I put this here incase for whatever reason someone wanted it. I don't really recommend it because both Chai and AF3 are weird about their naming, and Rosetta is somewhat strict. To each their own. 
 
 ## How It Works
 
