@@ -607,7 +607,7 @@ def write_cleaned_complex_pdb(structure: Structure, name_mapping: Dict[str, str]
     - Chain IDs follow X, Y, Z, Z1, Y1, X1, ... for ligands
     - The result is consistent with the generated .params files
     """
-    cleaned_filename = f"{prefix}_cleaned.pdb"
+    cleaned_filename = f"{prefix}.pdb"
     if not clobber and os.path.exists(cleaned_filename):
         print(f"    Warning: {cleaned_filename} exists, skipping (use --clobber to overwrite)")
         return
@@ -719,7 +719,7 @@ def main():
             ligand_chain_id = get_ligand_chain_id(ligand_index)
             write_ligand_files(ligand, args.prefix, args.clobber, ligand_chain_id)
 
-        print("\nStep 6: Writing cleaned complex PDB...")
+        print("\nStep 6: Writing complex PDB...")
         name_mapping = {ligand.original_name: ligand.sanitized_name for ligand in ligands}
         chain_mapping = {ligand.original_name: get_ligand_chain_id(i) for i, ligand in enumerate(ligands)}
         write_cleaned_complex_pdb(structure, name_mapping, chain_mapping, args.prefix, args.clobber)
