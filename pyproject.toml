@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-to-params"
+version = "0.1.0"
+description = "Convert AI-generated protein–ligand complexes to Rosetta params files."
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Siegel Lab"}
+]
+requires-python = ">=3.7"
+dependencies = [
+  "biopython>=1.79"
+]
+
+[project.scripts]
+ai-to-params = "ai_to_params:main"
+
+[project.urls]
+Homepage = "https://github.com/SiegelLab/general_protein_ml"
+
+[tool.setuptools]
+py-modules = ["ai_to_params", "rosetta_params_utils"]

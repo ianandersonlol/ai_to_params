@@ -1,0 +1,15 @@
+LICENSE
+README.md
+ai_to_params.py
+pyproject.toml
+rosetta_params_utils.py
+ai_to_params.egg-info/PKG-INFO
+ai_to_params.egg-info/SOURCES.txt
+ai_to_params.egg-info/dependency_links.txt
+ai_to_params.egg-info/entry_points.txt
+ai_to_params.egg-info/requires.txt
+ai_to_params.egg-info/top_level.txt
+tests/test_atom_numbering.py
+tests/test_chain_naming.py
+tests/test_fixes.py
+tests/test_metal_naming.py

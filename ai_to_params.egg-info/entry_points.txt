@@ -1,0 +1,2 @@
+[console_scripts]
+ai-to-params = ai_to_params:main
