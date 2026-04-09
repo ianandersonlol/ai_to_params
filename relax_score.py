@@ -295,39 +295,33 @@ def calculate_interface_energy(pose: Pose, sfxn: ScoreFunction,
     Returns:
         Interface delta energy (negative = favorable binding)
     """
-    # Score the pose to populate energies
     sfxn(pose)
 
     pdb_info = pose.pdb_info()
 
-    # Find ligand residue indices
+    # Find ligand and non-ligand residue indices
     ligand_residues = set()
+    protein_residues = set()
     for i in range(1, pose.total_residue() + 1):
         if pdb_info.chain(i) == ligand_chain:
             ligand_residues.add(i)
+        else:
+            protein_residues.add(i)
 
     if not ligand_residues:
         logger.warning(f"No residues found for chain {ligand_chain}")
         return 0.0
 
-    # Get the energy graph for pairwise interactions
-    energies = pose.energies()
-    energy_graph = energies.energy_graph()
-
+    # Get pairwise interaction energies from the energy graph
+    energy_graph = pose.energies().energy_graph()
     interface_energy = 0.0
 
     for lig_res in ligand_residues:
-        node = energy_graph.get_node(lig_res)
-        for edge_iter in range(node.num_edges()):
-            edge = node.get_edge(edge_iter)
-            other_res = edge.get_other_ind(lig_res)
-
-            # Only count protein-ligand interactions (not ligand-ligand)
-            if other_res not in ligand_residues:
-                # Sum all weighted energies for this pair
-                edge_energies = edge.fill_energy_map()
-                for st in range(1, int(edge_energies.n_score_types()) + 1):
-                    interface_energy += edge_energies.get(st) * sfxn.get_weight(st)
+        for prot_res in protein_residues:
+            edge = energy_graph.find_energy_edge(lig_res, prot_res)
+            if edge is None:
+                continue
+            interface_energy += edge.dot(sfxn.weights())
 
     return interface_energy
 
