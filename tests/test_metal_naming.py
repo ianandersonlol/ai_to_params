@@ -1,38 +1,34 @@
 #!/usr/bin/env python3
+"""Tests for metal atom name handling."""
 
 import sys
-sys.path.append('.')
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import pytest
 from ai_to_params import sanitize_atom_name
 
-def test_metal_atom_naming():
-    """Test metal atom name sanitization"""
-    print("Testing metal atom name sanitization:")
 
-    # Test metal atoms
-    metal_tests = [
-        ("MG_1", True, "MG"),     # Metal: MG_1 -> MG
-        ("MG_2", True, "MG"),     # Metal: MG_2 -> MG
-        ("MG1_1", True, "MG"),    # Metal: MG1_1 -> MG (Chai format)
-        ("ZN_1", True, "ZN"),     # Metal: ZN_1 -> ZN
-        ("ZN12_3", True, "ZN"),   # Metal: ZN12_3 -> ZN
-    ]
+class TestMetalNaming:
+    """Test metal atom name sanitization."""
 
-    # Test non-metal atoms
-    non_metal_tests = [
-        ("C_1", False, "C"),    # Non-metal: C_1 -> C
-        ("C_2", False, "C2"),   # Non-metal: C_2 -> C2
-        ("N_3", False, "N3"),   # Non-metal: N_3 -> N3
-        ("CA", False, "CA"),    # Non-metal: CA -> CA (unchanged)
-    ]
+    @pytest.mark.parametrize("input_name,expected", [
+        ("MG_1", "MG"),
+        ("MG_2", "MG"),
+        ("MG1_1", "MG"),
+        ("ZN_1", "ZN"),
+        ("ZN12_3", "ZN"),
+        ("FE_1", "FE"),
+        ("CA_1", "CA"),
+    ])
+    def test_metal_strips_to_element(self, input_name, expected):
+        assert sanitize_atom_name(input_name, is_metal=True) == expected
 
-    all_tests = metal_tests + non_metal_tests
-
-    for input_name, is_metal, expected in all_tests:
-        result = sanitize_atom_name(input_name, is_metal)
-        status = "✓" if result == expected else "✗"
-        metal_str = "(metal)" if is_metal else "(non-metal)"
-        print(f"  {input_name:<5} {metal_str:<12} -> {result:<5} {status}")
-
-if __name__ == "__main__":
-    test_metal_atom_naming()
+    @pytest.mark.parametrize("input_name,is_metal,expected", [
+        ("C_1", False, "C"),
+        ("C_2", False, "C1"),
+        ("N_3", False, "N2"),
+        ("CA", False, "CA"),
+    ])
+    def test_non_metal_unchanged(self, input_name, is_metal, expected):
+        assert sanitize_atom_name(input_name, is_metal) == expected

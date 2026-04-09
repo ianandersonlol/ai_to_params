@@ -16,33 +16,36 @@ Many thanks to Ian W. Davis for the foundational parameterization algorithms.
 import os
 import sys
 import argparse
+import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Set
 
-try:
-    from Bio.PDB import MMCIFParser, Structure, Model, Chain, Residue, Atom
-    from Bio.PDB.Atom import Atom as BioPythonAtom
-    from Bio.PDB.Residue import Residue as BioPythonResidue
-except ImportError:
-    print("Error: BioPython is required but not installed.")
-    print("Please install it with: pip install biopython")
-    sys.exit(1)
+from Bio.PDB import MMCIFParser, Structure, Model, Chain, Residue, Atom
+from Bio.PDB.Atom import Atom as BioPythonAtom
+from Bio.PDB.Residue import Residue as BioPythonResidue
 
-try:
-    from rosetta_params_utils import *
-except ImportError as e:
-    print(f"Error importing required modules: {e}")
-    print("Make sure rosetta_params_utils.py is available")
-    sys.exit(1)
+from rdkit import Chem
+from rdkit.Chem import rdDetermineBonds
 
-COVALENT_RADII = {
-    'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'P': 1.07, 'S': 1.05,
-    'F': 0.57, 'CL': 0.99, 'BR': 1.14, 'I': 1.33, 'MG': 1.41, 'CA': 1.76,
-    'ZN': 1.22, 'FE': 1.32, 'K': 2.03, 'NA': 1.66
-}
+from rosetta_params_utils import (
+    MolfileAtom, MolfileBond, Bond, r3,
+    add_fields_to_atoms, add_fields_to_bonds,
+    find_virtual_atoms, uniquify_atom_names,
+    check_bond_count, check_aromaticity,
+    assign_rosetta_types, assign_mm_types, assign_centroid_types,
+    assign_partial_charges, assign_rotatable_bonds, assign_rigid_ids,
+    build_fragment_trees, assign_internal_coords,
+    write_param_file, write_ligand_pdb, choose_neighbor_atom,
+)
+from constants import (
+    COVALENT_RADII, IGNORE_RESIDUES, METAL_ELEMENTS,
+    LIGAND_CHAIN_IDS, DEFAULT_BOND_TOLERANCE,
+)
 
-IGNORE_RESIDUES = {'HOH', 'WAT', 'SO4', 'PO4', 'CL'}
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class LigandData:
@@ -54,11 +57,11 @@ class LigandData:
     residue: BioPythonResidue
 
     def __post_init__(self):
-        # Ensure atoms and bonds lists are initialized
         if self.atoms is None:
             self.atoms = []
         if self.bonds is None:
             self.bonds = []
+
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -92,7 +95,18 @@ Examples:
                         default=False,
                         help="Use cleaned original names for 3-letter codes instead of systematic L01, L02")
 
+    parser.add_argument("--bond-tolerance",
+                        type=float,
+                        default=DEFAULT_BOND_TOLERANCE,
+                        help=f"Bond inference tolerance in Angstroms (default: {DEFAULT_BOND_TOLERANCE})")
+
+    parser.add_argument("-v", "--verbose",
+                        action="store_true",
+                        default=False,
+                        help="Enable verbose/debug logging")
+
     return parser.parse_args()
+
 
 def parse_cif_file(cif_path: str) -> Structure:
     """
@@ -103,62 +117,54 @@ def parse_cif_file(cif_path: str) -> Structure:
 
     Returns:
         BioPython Structure object
-
-    Raises:
-        Exception: If parsing fails
     """
-    try:
-        parser = MMCIFParser(QUIET=True)
-        # Extract the structure ID from the filename
-        structure_id = os.path.splitext(os.path.basename(cif_path))[0]
-        structure = parser.get_structure(structure_id, cif_path)
+    parser = MMCIFParser(QUIET=True)
+    structure_id = os.path.splitext(os.path.basename(cif_path))[0]
+    structure = parser.get_structure(structure_id, cif_path)
 
-        if structure is None:
-            raise ValueError("Failed to parse CIF file - structure is None")
+    if structure is None:
+        raise ValueError(f"Failed to parse CIF file - structure is None")
 
-        return structure
+    return structure
 
-    except Exception as e:
-        raise Exception(f"Failed to parse CIF file '{cif_path}': {e}")
 
 def clean_ligand_name(original_name: str) -> str:
     """
-    Clean a ligand name to make it suitable for Rosetta (≤3 chars, no conflicts)
+    Clean a ligand name to make it suitable for Rosetta (<=3 chars, no conflicts)
 
     Args:
         original_name: Original residue name from CIF
 
     Returns:
         Cleaned name suitable for Rosetta
-
-    Examples:
-        LIG_FRU -> FRU
-        UNL123 -> UNL
-        GLUCOSE -> GLC
-        ATP -> ATP
     """
     name = original_name.strip().upper()
 
-    # Remove common prefixes
     prefixes_to_remove = ['LIG_', 'LIGAND_', 'HET_', 'SMALL_']
     for prefix in prefixes_to_remove:
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
 
-    # Remove trailing numbers (UNL123 -> UNL)
-    import re
     name = re.sub(r'\d+$', '', name)
 
-    # Truncate to 3 characters if longer
     if len(name) > 3:
         name = name[:3]
 
-    # Make sure it's not empty
     if not name:
         name = "LIG"
 
     return name
+
+
+def _is_metal_ligand(residue) -> bool:
+    """Check if a residue is a single-atom metal ligand."""
+    if len(residue) != 1:
+        return False
+    atom = list(residue)[0]
+    element = atom.element.upper() if atom.element else atom.get_name().strip()[0]
+    return element in METAL_ELEMENTS
+
 
 def identify_and_extract_ligands(structure: Structure, use_clean_names: bool = False) -> List[LigandData]:
     """
@@ -166,27 +172,19 @@ def identify_and_extract_ligands(structure: Structure, use_clean_names: bool = F
 
     Args:
         structure: BioPython Structure object
-        use_clean_names: If True, use cleaned names (FRU, ATP). If False (default), use systematic (L01, L02)
+        use_clean_names: If True, use cleaned names (FRU, ATP). If False, use systematic (L01, L02)
 
     Returns:
         List of LigandData objects for unique ligands
-
-    The function:
-    1. Iterates through all residues and identifies HETATM records
-    2. Filters out common solvents and simple metal ions
-    3. Groups unique ligands by their original 3-letter residue name
-    4. Assigns systematic names (L01, L02) by default for internal consistency
-    5. Keeps original names for user-friendly filenames
     """
     ligand_residues = {}
-    unique_ligands = []
 
     for model in structure:
         for chain in model:
             for residue in chain:
                 res_name = residue.get_resname().strip()
 
-                if residue.id[0] == ' ':  # Standard residue
+                if residue.id[0] == ' ':
                     continue
 
                 if res_name in IGNORE_RESIDUES:
@@ -195,92 +193,74 @@ def identify_and_extract_ligands(structure: Structure, use_clean_names: bool = F
                 if len(residue) == 1:
                     atom = list(residue)[0]
                     element = atom.element.upper() if atom.element else atom.get_name().strip()[0]
-                    metals = ['MG', 'ZN', 'FE', 'CA', 'MN', 'CU', 'NI', 'CO', 'CD', 'PB', 'HG', 'K', 'NA']
-                    if element in metals:
-                        print(f"Found metal ligand: {res_name} (element: {element})")
+                    if element in METAL_ELEMENTS:
+                        logger.info(f"Found metal ligand: {res_name} (element: {element})")
                     else:
-                        print(f"Skipping single-atom ligand: {res_name}")
+                        logger.info(f"Skipping single-atom ligand: {res_name}")
                         continue
 
                 if res_name not in ligand_residues:
                     ligand_residues[res_name] = []
                 ligand_residues[res_name].append(residue)
 
+    unique_ligands = []
     ligand_counter = 1
-    name_mapping = {}
     used_names = set()
 
     for original_name, residues in ligand_residues.items():
         template_residue = residues[0]
+        is_metal = _is_metal_ligand(template_residue)
 
-        is_metal_ligand = False
-        if len(template_residue) == 1:
+        if is_metal:
             atom = list(template_residue)[0]
             element = atom.element.upper() if atom.element else atom.get_name().strip()[0]
-            metals = ['MG', 'ZN', 'FE', 'CA', 'MN', 'CU', 'NI', 'CO', 'CD', 'PB', 'HG', 'K', 'NA']
-            if element in metals:
-                is_metal_ligand = True
-                sanitized_name = element
-
-        if not is_metal_ligand:
-            if use_clean_names:
-                sanitized_name = clean_ligand_name(original_name)
-
-                if sanitized_name in used_names:
-                    counter = 2
-                    base_name = sanitized_name
-                    while sanitized_name in used_names:
-                        if len(base_name) == 3:
-                            sanitized_name = base_name[:2] + str(counter)
-                        else:
-                            sanitized_name = base_name + str(counter)
-                        counter += 1
-
-                used_names.add(sanitized_name)
-            else:
-                sanitized_name = f"L{ligand_counter:02d}"
-
-        name_mapping[original_name] = sanitized_name
+            sanitized_name = element
+        elif use_clean_names:
+            sanitized_name = clean_ligand_name(original_name)
+            if sanitized_name in used_names:
+                counter = 2
+                base_name = sanitized_name
+                while sanitized_name in used_names:
+                    if len(base_name) == 3:
+                        sanitized_name = base_name[:2] + str(counter)
+                    else:
+                        sanitized_name = base_name + str(counter)
+                    counter += 1
+            used_names.add(sanitized_name)
+        else:
+            sanitized_name = f"L{ligand_counter:02d}"
 
         atoms = []
         for atom in template_residue:
-            mol_atom = create_molfile_atom_from_biopython(atom, is_metal_ligand)
+            mol_atom = create_molfile_atom_from_biopython(atom, is_metal)
             atoms.append(mol_atom)
 
         ligand_data = LigandData(
             original_name=original_name,
             sanitized_name=sanitized_name,
             atoms=atoms,
-            bonds=[],  # Will be filled by bond inference
+            bonds=[],
             residue=template_residue
         )
 
         unique_ligands.append(ligand_data)
         ligand_counter += 1
 
-        print(f"Found ligand: {original_name} -> {sanitized_name} ({len(atoms)} atoms, files: {original_name}.*)")
+        logger.info(f"Found ligand: {original_name} -> {sanitized_name} ({len(atoms)} atoms)")
 
     return unique_ligands
 
+
 def create_molfile_atom_from_biopython(biopython_atom: BioPythonAtom, is_metal: bool = False) -> MolfileAtom:
-    """
-    Convert a BioPython Atom to a MolfileAtom-like object
-
-    Args:
-        biopython_atom: BioPython Atom object
-
-    Returns:
-        MolfileAtom object
-    """
+    """Convert a BioPython Atom to a MolfileAtom object"""
     coord = biopython_atom.get_coord()
-    x, y, z = coord[0], coord[1], coord[2]
 
     atom = MolfileAtom()
     atom.name = sanitize_atom_name(biopython_atom.get_name().strip(), is_metal)
     atom.elem = biopython_atom.element.upper() if biopython_atom.element else atom.name[0]
-    atom.x = float(x)
-    atom.y = float(y)
-    atom.z = float(z)
+    atom.x = float(coord[0])
+    atom.y = float(coord[1])
+    atom.z = float(coord[2])
 
     atom.partial_charge = None
     atom.bonds = []
@@ -289,31 +269,111 @@ def create_molfile_atom_from_biopython(biopython_atom: BioPythonAtom, is_metal: 
 
     atom.ros_type = ""
     atom.mm_type = ""
-    atom.fragment_id = 1  # Default to fragment 1
+    atom.fragment_id = 1
     atom.is_virtual = False
 
     return atom
 
-def infer_bonds(atoms: List[MolfileAtom], tolerance: float = 0.45) -> List[MolfileBond]:
+
+def _build_rdkit_mol(atoms: List[MolfileAtom]) -> Chem.RWMol:
     """
-    Infer bonds between atoms based on covalent radii and distances
+    Build an RDKit editable molecule from MolfileAtom list for bond perception.
+
+    Args:
+        atoms: List of MolfileAtom objects with 3D coordinates
+
+    Returns:
+        RDKit RWMol with 3D coordinates set
+    """
+    mol = Chem.RWMol()
+    conf = Chem.Conformer(len(atoms))
+
+    for i, atom in enumerate(atoms):
+        rd_atom = Chem.Atom(atom.elem.capitalize() if len(atom.elem) == 1 else atom.elem)
+        mol.AddAtom(rd_atom)
+        conf.SetAtomPosition(i, (atom.x, atom.y, atom.z))
+
+    mol.AddConformer(conf, assignId=True)
+    return mol
+
+
+
+def infer_bonds_rdkit(atoms: List[MolfileAtom]) -> List[MolfileBond]:
+    """
+    Infer bond connectivity using RDKit's DetermineConnectivity.
+
+    Uses RDKit to perceive which atoms are bonded from 3D coordinates.
+    Bond orders are set to SINGLE (Rosetta parameterization works with
+    single bonds; DetermineBondOrders is too slow for large ligands).
+
+    Args:
+        atoms: List of MolfileAtom objects
+
+    Returns:
+        List of MolfileBond objects
+    """
+    mol = _build_rdkit_mol(atoms)
+
+    try:
+        rdDetermineBonds.DetermineConnectivity(mol)
+    except Exception as e:
+        logger.warning(f"RDKit connectivity failed ({e}), falling back to distance-based")
+        return infer_bonds_distance(atoms)
+
+    bonds = []
+    atom_bonds = {atom: [] for atom in atoms}
+
+    for rd_bond in mol.GetBonds():
+        idx1 = rd_bond.GetBeginAtomIdx()
+        idx2 = rd_bond.GetEndAtomIdx()
+        atom1, atom2 = atoms[idx1], atoms[idx2]
+        bond = MolfileBond()
+        bond.a1 = atom1
+        bond.a2 = atom2
+        bond.order = Bond.SINGLE
+        bond.is_ring = rd_bond.IsInRing()
+
+        mirror_bond = MolfileBond()
+        mirror_bond.a1 = atom2
+        mirror_bond.a2 = atom1
+        mirror_bond.order = Bond.SINGLE
+        mirror_bond.is_ring = rd_bond.IsInRing()
+
+        bond.mirror = mirror_bond
+        mirror_bond.mirror = bond
+
+        bonds.append(bond)
+        atom_bonds[atom1].append(bond)
+        atom_bonds[atom2].append(mirror_bond)
+
+    # Set ring info on atoms
+    ring_info = mol.GetRingInfo()
+    for i, atom in enumerate(atoms):
+        atom.bonds = atom_bonds[atom]
+        atom.heavy_bonds = [b for b in atom.bonds if not b.a2.is_H]
+        atom.is_ring = ring_info.NumAtomRings(i) > 0
+        if atom.is_ring:
+            sizes = ring_info.AtomRingSizes(i)
+            atom.ring_size = min(sizes) if sizes else 0
+
+    logger.info(f"RDKit inferred {len(bonds)} bonds for {len(atoms)} atoms")
+
+    return bonds
+
+
+def infer_bonds_distance(atoms: List[MolfileAtom], tolerance: float = DEFAULT_BOND_TOLERANCE) -> List[MolfileBond]:
+    """
+    Fallback: infer bonds based on covalent radii and distances (all single bonds).
 
     Args:
         atoms: List of MolfileAtom objects
         tolerance: Additional tolerance to add to sum of covalent radii (Angstroms)
 
     Returns:
-        List of MolfileBond objects representing inferred bonds
-
-    The function calculates Euclidean distance between every pair of atoms.
-    If the distance is less than the sum of their covalent radii plus tolerance,
-    a bond is created between them.
+        List of MolfileBond objects (all single bond order)
     """
     bonds = []
-    atom_bonds = {}
-
-    for atom in atoms:
-        atom_bonds[atom] = []
+    atom_bonds = {atom: [] for atom in atoms}
 
     for i in range(len(atoms)):
         for j in range(i + 1, len(atoms)):
@@ -327,13 +387,12 @@ def infer_bonds(atoms: List[MolfileAtom], tolerance: float = 0.45) -> List[Molfi
             radius1 = COVALENT_RADII.get(atom1.elem, 1.5)
             radius2 = COVALENT_RADII.get(atom2.elem, 1.5)
 
-            bond_threshold = radius1 + radius2 + tolerance
-            if distance < bond_threshold:
+            if distance < radius1 + radius2 + tolerance:
                 bond = MolfileBond()
                 bond.a1 = atom1
                 bond.a2 = atom2
-                bond.order = Bond.SINGLE  # Default to single bond
-                bond.is_ring = False  # Will be determined later if needed
+                bond.order = Bond.SINGLE
+                bond.is_ring = False
 
                 mirror_bond = MolfileBond()
                 mirror_bond.a1 = atom2
@@ -345,7 +404,6 @@ def infer_bonds(atoms: List[MolfileAtom], tolerance: float = 0.45) -> List[Molfi
                 mirror_bond.mirror = bond
 
                 bonds.append(bond)
-
                 atom_bonds[atom1].append(bond)
                 atom_bonds[atom2].append(mirror_bond)
 
@@ -353,9 +411,27 @@ def infer_bonds(atoms: List[MolfileAtom], tolerance: float = 0.45) -> List[Molfi
         atom.bonds = atom_bonds[atom]
         atom.heavy_bonds = [b for b in atom.bonds if not b.a2.is_H]
 
-    print(f"Inferred {len(bonds)} bonds for {len(atoms)} atoms")
+    logger.info(f"Distance-based: inferred {len(bonds)} bonds for {len(atoms)} atoms")
 
     return bonds
+
+
+def infer_bonds(atoms: List[MolfileAtom], tolerance: float = DEFAULT_BOND_TOLERANCE) -> List[MolfileBond]:
+    """
+    Infer bonds between atoms, using RDKit for bond order perception.
+
+    Tries RDKit first for accurate bond orders and aromaticity detection.
+    Falls back to distance-based inference if RDKit fails.
+
+    Args:
+        atoms: List of MolfileAtom objects
+        tolerance: Tolerance for distance-based fallback (Angstroms)
+
+    Returns:
+        List of MolfileBond objects
+    """
+    return infer_bonds_rdkit(atoms)
+
 
 def parameterize_ligand(ligand: LigandData):
     """
@@ -363,9 +439,6 @@ def parameterize_ligand(ligand: LigandData):
 
     Args:
         ligand: LigandData object with atoms and bonds
-
-    This function applies the same sequence of parameterization steps
-    as the original molfile_to_params.py main function.
     """
     atoms = ligand.atoms
     bonds = ligand.bonds
@@ -374,37 +447,32 @@ def parameterize_ligand(ligand: LigandData):
         def __init__(self, atoms, bonds):
             self.atoms = atoms
             self.bonds = bonds
-            self.footer = []  # No footer for CIF-derived molecules
+            self.footer = []
 
     molfile = MockMolfile(atoms, bonds)
 
-    # (same sequence as original molfile_to_params.py main function)
-    try:
-        add_fields_to_atoms(atoms)
-        add_fields_to_bonds(bonds)
-        find_virtual_atoms(atoms)
-        uniquify_atom_names(atoms)
-        check_bond_count(atoms)
-        check_aromaticity(bonds)
-        assign_rosetta_types(atoms)
-        assign_mm_types(atoms)
-        assign_centroid_types(atoms)
+    add_fields_to_atoms(atoms)
+    add_fields_to_bonds(bonds)
+    find_virtual_atoms(atoms)
+    uniquify_atom_names(atoms)
+    check_bond_count(atoms)
+    check_aromaticity(bonds)
+    assign_rosetta_types(atoms)
+    assign_mm_types(atoms)
+    assign_centroid_types(atoms)
 
-        assign_partial_charges(atoms, net_charge=0.0)
-        assign_rotatable_bonds(bonds)
-        assign_rigid_ids(atoms)
+    assign_partial_charges(atoms, net_charge=0.0)
+    assign_rotatable_bonds(bonds)
+    assign_rigid_ids(atoms)
 
-        for atom in atoms:
-            atom.fragment_id = 1
+    for atom in atoms:
+        atom.fragment_id = 1
 
-        build_fragment_trees(molfile)
-        assign_internal_coords(molfile)
+    build_fragment_trees(molfile)
+    assign_internal_coords(molfile)
 
-        print(f"    Successfully parameterized {len(atoms)} atoms, {len(bonds)} bonds")
+    logger.info(f"    Parameterized {len(atoms)} atoms, {len(bonds)} bonds")
 
-    except Exception as e:
-        print(f"    Error during parameterization: {e}")
-        raise
 
 def write_ligand_files(ligand: LigandData, prefix: str, clobber: bool, ligand_chain_id: str):
     """
@@ -414,10 +482,7 @@ def write_ligand_files(ligand: LigandData, prefix: str, clobber: bool, ligand_ch
         ligand: LigandData object that has been parameterized
         prefix: Output file prefix
         clobber: Whether to overwrite existing files
-
-    File naming strategy:
-    - Filenames use original names: LIG_FRU.params, UNL123.pdb (user-friendly)
-    - Internal 3-letter codes use systematic names: L01, L02 (Rosetta consistency)
+        ligand_chain_id: Chain ID for PDB output
     """
     class MockMolfile:
         def __init__(self, atoms, bonds):
@@ -428,65 +493,54 @@ def write_ligand_files(ligand: LigandData, prefix: str, clobber: bool, ligand_ch
     molfile = MockMolfile(ligand.atoms, ligand.bonds)
 
     filename_base = ligand.original_name
-    internal_name = ligand.sanitized_name  # L01, L02, etc.
+    internal_name = ligand.sanitized_name
 
     params_filename = f"{prefix}_{filename_base}.params"
     if not clobber and os.path.exists(params_filename):
-        print(f"    Warning: {params_filename} exists, skipping (use --clobber to overwrite)")
+        logger.warning(f"    {params_filename} exists, skipping (use --clobber to overwrite)")
     else:
-        try:
-            write_param_file(
-                params_filename,
-                molfile,
-                internal_name,  # Use L01, L02 for 3-letter code
-                1,  # fragment_id = 1
-                1,  # base_confs = 1
-                5000,  # max_confs = 5000
-                None  # amino_acid = None
-            )
-            print(f"    Wrote {params_filename} (residue code: {internal_name})")
-        except Exception as e:
-            print(f"    Error writing params file: {e}")
-            raise
+        write_param_file(
+            params_filename,
+            molfile,
+            internal_name,
+            1,     # fragment_id
+            1,     # base_confs
+            5000,  # max_confs
+            None   # amino_acid
+        )
+        logger.info(f"    Wrote {params_filename} (residue code: {internal_name})")
 
     pdb_filename = f"{prefix}_{filename_base}.pdb"
     if not clobber and os.path.exists(pdb_filename):
-        print(f"    Warning: {pdb_filename} exists, skipping (use --clobber to overwrite)")
+        logger.warning(f"    {pdb_filename} exists, skipping (use --clobber to overwrite)")
     else:
-        try:
-            write_ligand_pdb(
-                pdb_filename,
-                molfile,    # template
-                molfile,    # coordinates (same object)
-                internal_name,  # Use L01, L02 for 3-letter residue code
-                ctr=None,   # No recentering
-                chain_id=ligand_chain_id  # Use X, Y, Z, Z1, Y1, X1, ...
-            )
-            print(f"    Wrote {pdb_filename} (residue code: {internal_name})")
-        except Exception as e:
-            print(f"    Error writing PDB file: {e}")
-            raise
+        write_ligand_pdb(
+            pdb_filename,
+            molfile,
+            molfile,
+            internal_name,
+            ctr=None,
+            chain_id=ligand_chain_id
+        )
+        logger.info(f"    Wrote {pdb_filename} (residue code: {internal_name})")
+
 
 def sanitize_atom_name(atom_name: str, is_metal: bool = False) -> str:
     """
     Sanitize atom names for Rosetta compatibility
+
     Args:
         atom_name: Original atom name from CIF file (e.g., "C_1", "N_2", "MG1_1")
         is_metal: True if this is a metal atom (uses element name only)
+
     Returns:
-        Sanitized atom name (e.g., "C1", "N2", "MG")
+        Sanitized atom name
+
     Examples:
-        C_1 -> C1
-        C_2 -> C2
-        MG_1 -> MG (if is_metal=True)
-        MG1_1 -> MG (if is_metal=True)
-        CA -> CA (unchanged)
+        C_1 -> C1, C_2 -> C2, MG_1 -> MG (if is_metal=True), CA -> CA (unchanged)
     """
     if is_metal:
-        # For metals, strip everything except the base element symbol
-        import re
-        element_only = re.sub(r'[0-9_].*', '', atom_name)  # Remove numbers, underscores, and everything after
-        return element_only
+        return re.sub(r'[0-9_].*', '', atom_name)
 
     if '_' in atom_name:
         parts = atom_name.split('_')
@@ -494,58 +548,40 @@ def sanitize_atom_name(atom_name: str, is_metal: bool = False) -> str:
 
         try:
             suffix_num = int(parts[1])
-            import re
-
-            # Check if base has numbers (like C1, C2 in C1_1, C2_1)
             base_match = re.match(r'([A-Z]+)(\d+)', base)
             if base_match:
-                # Base has numbers (C1_1, C2_1 format)
-                element = base_match.group(1)  # C, O, N, etc.
-                base_num = int(base_match.group(2))  # 1, 2, 3, etc.
-
+                element = base_match.group(1)
+                base_num = int(base_match.group(2))
                 if base_num == 1:
-                    return element  # C1_1 -> C
+                    return element
                 else:
-                    return f"{element}{base_num-1}"  # C2_1 -> C1, C3_1 -> C2
+                    return f"{element}{base_num-1}"
             else:
-                # Base has no numbers (C_1, C_2 format)
                 if suffix_num == 1:
-                    return base  # C_1 -> C
+                    return base
                 else:
-                    return f"{base}{suffix_num-1}"  # C_2 -> C1
+                    return f"{base}{suffix_num-1}"
         except (ValueError, IndexError):
-            # If we can't parse the number, just remove the underscore
             return atom_name.replace('_', '')
 
-    # Handle non-underscore format (AF3 style: O1, P1, C1, C2)
-    import re
     match = re.match(r'([A-Z]+)(\d+)', atom_name)
     if match:
-        element = match.group(1)  # O, P, C, etc.
-        num = int(match.group(2))  # 1, 2, 3, etc.
-
+        element = match.group(1)
+        num = int(match.group(2))
         if num == 1:
-            return element  # O1 -> O, C1 -> C
+            return element
         else:
-            return f"{element}{num-1}"  # O2 -> O1, C2 -> C1
+            return f"{element}{num-1}"
 
     return atom_name
+
 
 def sanitize_chain_id(chain_id: str) -> str:
     """
     Sanitize chain IDs for Rosetta compatibility
 
-    Args:
-        chain_id: Original chain ID from CIF file
-
-    Returns:
-        Sanitized chain ID
-
     Examples:
-        C_1 -> C
-        C_2 -> C1
-        A_1 -> A
-        Z_10 -> Z9
+        C_1 -> C, C_2 -> C1, A -> A (unchanged)
     """
     if '_' in chain_id:
         parts = chain_id.split('_')
@@ -553,13 +589,14 @@ def sanitize_chain_id(chain_id: str) -> str:
         try:
             num = int(parts[1])
             if num == 1:
-                return base  # C_1 -> C (start from base name)
+                return base
             else:
-                return f"{base}{num-1}"  # C_2 -> C1, C_3 -> C2, etc.
+                return f"{base}{num-1}"
         except (ValueError, IndexError):
             return chain_id.replace('_', '')
 
     return chain_id
+
 
 def get_ligand_chain_id(ligand_index: int) -> str:
     """
@@ -569,169 +606,136 @@ def get_ligand_chain_id(ligand_index: int) -> str:
         ligand_index: 0-based index of the ligand
 
     Returns:
-        Single character chain ID for the ligand
-
-    Examples:
-        0 -> X
-        1 -> Y
-        2 -> Z
-        3 -> W (continue with remaining letters)
-        4 -> V
-        5 -> U
+        Single character chain ID (X, Y, Z, W, V, ...)
     """
-    # Use X, Y, Z first, then continue backwards through alphabet
-    # Avoid A, B, C, D, E, F, G, H (common protein chains)
-    # and avoid I, L (confusing with 1)
-    available_chains = ['X', 'Y', 'Z', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P', 'O', 'N', 'M', 'K', 'J']
-
-    if ligand_index < len(available_chains):
-        return available_chains[ligand_index]
+    if ligand_index < len(LIGAND_CHAIN_IDS):
+        return LIGAND_CHAIN_IDS[ligand_index]
     else:
-        return available_chains[ligand_index % len(available_chains)]
+        return LIGAND_CHAIN_IDS[ligand_index % len(LIGAND_CHAIN_IDS)]
+
 
 def write_cleaned_complex_pdb(structure: Structure, name_mapping: Dict[str, str],
                              chain_mapping: Dict[str, str], prefix: str, clobber: bool):
     """
     Write a cleaned PDB of the entire complex with updated ligand names
-
-    Args:
-        structure: Original BioPython Structure object
-        name_mapping: Dictionary mapping original ligand names to sanitized names
-        chain_mapping: Dictionary mapping original ligand names to chain IDs
-        prefix: Output file prefix
-        clobber: Whether to overwrite existing files
-
-    This function writes a PDB file of the entire complex where:
-    - Protein ATOM records are sanitized for chain names (C_1 -> C)
-    - HETATM residues use systematic names and proper chain IDs
-    - Chain IDs follow X, Y, Z, Z1, Y1, X1, ... for ligands
-    - The result is consistent with the generated .params files
     """
     cleaned_filename = f"{prefix}.pdb"
     if not clobber and os.path.exists(cleaned_filename):
-        print(f"    Warning: {cleaned_filename} exists, skipping (use --clobber to overwrite)")
+        logger.warning(f"    {cleaned_filename} exists, skipping (use --clobber to overwrite)")
         return
 
-    try:
-        with open(cleaned_filename, 'w') as f:
-            atom_number = 0
+    with open(cleaned_filename, 'w') as f:
+        atom_number = 0
 
-            for model in structure:
-                for chain in model:
-                    original_chain_id = chain.get_id()
+        for model in structure:
+            for chain in model:
+                original_chain_id = chain.get_id()
 
-                    for residue in chain:
-                        res_name = residue.get_resname().strip()
-                        res_id = residue.get_id()
-                        res_num = res_id[1]
+                for residue in chain:
+                    res_name = residue.get_resname().strip()
+                    res_id = residue.get_id()
+                    res_num = res_id[1]
 
-                        is_hetatm = (res_id[0] != ' ')
+                    is_hetatm = (res_id[0] != ' ')
 
-                        if is_hetatm and res_name in name_mapping:
-                            # This is a ligand - use systematic naming and ligand chain ID
-                            output_res_name = name_mapping[res_name]
-                            output_chain_id = chain_mapping[res_name]
+                    if is_hetatm and res_name in name_mapping:
+                        output_res_name = name_mapping[res_name]
+                        output_chain_id = chain_mapping[res_name]
+                    else:
+                        output_res_name = res_name
+                        output_chain_id = sanitize_chain_id(original_chain_id)
+
+                    for atom in residue:
+                        atom_number += 1
+                        coord = atom.get_coord()
+                        x, y, z = coord[0], coord[1], coord[2]
+
+                        element = atom.element.upper() if atom.element else atom.get_name().strip()[0]
+                        is_metal = element in METAL_ELEMENTS
+
+                        if is_hetatm:
+                            atom_name = sanitize_atom_name(atom.get_name().strip(), is_metal)
                         else:
-                            # This is protein/standard - sanitize chain ID
-                            output_res_name = res_name
-                            output_chain_id = sanitize_chain_id(original_chain_id)
+                            atom_name = atom.get_name().strip()
 
-                        for atom in residue:
-                            atom_number += 1
-                            coord = atom.get_coord()
-                            x, y, z = coord[0], coord[1], coord[2]
+                        record_type = "HETATM" if is_hetatm else "ATOM  "
 
-                            element = atom.element.upper() if atom.element else atom.get_name().strip()[0]
-                            metals = ['MG', 'ZN', 'FE', 'CA', 'MN', 'CU', 'NI', 'CO', 'CD', 'PB', 'HG', 'K', 'NA']
-                            is_metal = element in metals
+                        f.write(f"{record_type}{atom_number:5d} {atom_name:4s} {output_res_name:3s} "
+                               f"{output_chain_id}{res_num:4d}    {x:8.3f}{y:8.3f}{z:8.3f}"
+                               f"  1.00 20.00          {element:2s}  \n")
 
-                            if is_hetatm:
-                                atom_name = sanitize_atom_name(atom.get_name().strip(), is_metal)
-                            else:
-                                # For protein atoms, don't sanitize
-                                atom_name = atom.get_name().strip()
+            f.write("TER" + " " * 77 + "\n")
 
-                            record_type = "HETATM" if is_hetatm else "ATOM  "
+        f.write("END" + " " * 77 + "\n")
 
-                            f.write(f"{record_type}{atom_number:5d} {atom_name:4s} {output_res_name:3s} "
-                                   f"{output_chain_id}{res_num:4d}    {x:8.3f}{y:8.3f}{z:8.3f}"
-                                   f"  1.00 20.00          {element:2s}  \n")
+    logger.info(f"    Wrote {cleaned_filename}")
 
-                f.write("TER" + " " * 77 + "\n")
-
-            f.write("END" + " " * 77 + "\n")
-
-        print(f"    Wrote {cleaned_filename}")
-
-    except Exception as e:
-        print(f"    Error writing cleaned complex PDB: {e}")
-        raise
 
 def main():
     """Main function to orchestrate the CIF to params conversion"""
     args = parse_arguments()
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(message)s",
+    )
+
     if not os.path.exists(args.cif):
-        print(f"Error: Input CIF file '{args.cif}' does not exist")
+        logger.error(f"Input CIF file '{args.cif}' does not exist")
         return 1
 
-    print(f"AI to Params converter")
-    print(f"Input CIF file: {args.cif}")
-    print(f"Output prefix: {args.prefix}")
-    print(f"Overwrite existing files: {args.clobber}")
+    logger.info(f"AI to Params converter")
+    logger.info(f"Input CIF file: {args.cif}")
+    logger.info(f"Output prefix: {args.prefix}")
+    logger.info(f"Overwrite existing files: {args.clobber}")
 
     try:
-        print("\nStep 1: Parsing CIF file...")
+        logger.info("\nStep 1: Parsing CIF file...")
         structure = parse_cif_file(args.cif)
-        print(f"Successfully parsed structure with {len(list(structure.get_models()))} model(s)")
+        logger.info(f"Successfully parsed structure with {len(list(structure.get_models()))} model(s)")
 
-        print("\nStep 2: Identifying and extracting ligands...")
+        logger.info("\nStep 2: Identifying and extracting ligands...")
         ligands = identify_and_extract_ligands(structure, args.clean_names)
-        print(f"Found {len(ligands)} unique ligand type(s)")
+        logger.info(f"Found {len(ligands)} unique ligand type(s)")
 
-        print("\nStep 3: Inferring bonds for each ligand...")
+        logger.info("\nStep 3: Inferring bonds for each ligand...")
         for ligand in ligands:
-            print(f"  Processing {ligand.original_name} -> {ligand.sanitized_name}")
-            ligand.bonds = infer_bonds(ligand.atoms)
+            logger.info(f"  Processing {ligand.original_name} -> {ligand.sanitized_name}")
+            ligand.bonds = infer_bonds(ligand.atoms, args.bond_tolerance)
 
-        print("\nStep 4: Converting to Rosetta parameterization...")
+        logger.info("\nStep 4: Converting to Rosetta parameterization...")
         for ligand in ligands:
-            if len(ligand.atoms) == 1:
-                element = ligand.atoms[0].elem
-                metals = ['MG', 'ZN', 'FE', 'CA', 'MN', 'CU', 'NI', 'CO', 'CD', 'PB', 'HG', 'K', 'NA']
-                if element in metals:
-                    print(f"  Skipping parameterization for metal: {ligand.sanitized_name}")
-                    continue
+            if _is_metal_ligand(ligand.residue):
+                logger.info(f"  Skipping parameterization for metal: {ligand.sanitized_name}")
+                continue
 
-            print(f"  Parameterizing {ligand.sanitized_name}...")
+            logger.info(f"  Parameterizing {ligand.sanitized_name}...")
             parameterize_ligand(ligand)
 
-        print("\nStep 5: Writing output files...")
+        logger.info("\nStep 5: Writing output files...")
         for ligand_index, ligand in enumerate(ligands):
-            if len(ligand.atoms) == 1:
-                element = ligand.atoms[0].elem
-                metals = ['MG', 'ZN', 'FE', 'CA', 'MN', 'CU', 'NI', 'CO', 'CD', 'PB', 'HG', 'K', 'NA']
-                if element in metals:
-                    print(f"  Skipping file writing for metal: {ligand.sanitized_name}")
-                    continue
+            if _is_metal_ligand(ligand.residue):
+                logger.info(f"  Skipping file writing for metal: {ligand.sanitized_name}")
+                continue
 
-            print(f"  Writing files for {ligand.sanitized_name}...")
+            logger.info(f"  Writing files for {ligand.sanitized_name}...")
             ligand_chain_id = get_ligand_chain_id(ligand_index)
             write_ligand_files(ligand, args.prefix, args.clobber, ligand_chain_id)
 
-        print("\nStep 6: Writing complex PDB...")
-        name_mapping = {ligand.original_name: ligand.sanitized_name for ligand in ligands}
-        chain_mapping = {ligand.original_name: get_ligand_chain_id(i) for i, ligand in enumerate(ligands)}
+        logger.info("\nStep 6: Writing complex PDB...")
+        name_mapping = {lig.original_name: lig.sanitized_name for lig in ligands}
+        chain_mapping = {lig.original_name: get_ligand_chain_id(i) for i, lig in enumerate(ligands)}
         write_cleaned_complex_pdb(structure, name_mapping, chain_mapping, args.prefix, args.clobber)
 
-        print("Conversion completed successfully!")
+        logger.info("Conversion completed successfully!")
         return 0
 
     except Exception as e:
-        print(f"Error during conversion: {e}")
+        logger.error(f"Error during conversion: {e}")
         import traceback
         traceback.print_exc()
         return 1
+
 
 if __name__ == "__main__":
     sys.exit(main())
