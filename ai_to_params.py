@@ -158,12 +158,20 @@ def clean_ligand_name(original_name: str) -> str:
 
 
 def _is_metal_ligand(residue) -> bool:
-    """Check if a residue is a single-atom metal ligand."""
-    if len(residue) != 1:
+    """Check if a residue is a pure metal ligand (all atoms are metals).
+
+    Single-atom metals (Fe, Zn, Mg) return True — Rosetta handles these
+    natively without .params files. Multi-atom residues that mix metals
+    and non-metals (e.g. [2Fe-2S] clusters) return False — these need
+    .params files like any other ligand.
+    """
+    atoms = list(residue)
+    if not atoms:
         return False
-    atom = list(residue)[0]
-    element = atom.element.upper() if atom.element else atom.get_name().strip()[0]
-    return element in METAL_ELEMENTS
+    return all(
+        (a.element.upper() if a.element else a.get_name().strip()[:2].upper()) in METAL_ELEMENTS
+        for a in atoms
+    )
 
 
 def identify_and_extract_ligands(structure: Structure, use_clean_names: bool = False) -> List[LigandData]:
@@ -190,14 +198,12 @@ def identify_and_extract_ligands(structure: Structure, use_clean_names: bool = F
                 if res_name in IGNORE_RESIDUES:
                     continue
 
-                if len(residue) == 1:
-                    atom = list(residue)[0]
-                    element = atom.element.upper() if atom.element else atom.get_name().strip()[0]
-                    if element in METAL_ELEMENTS:
-                        logger.info(f"Found metal ligand: {res_name} (element: {element})")
-                    else:
-                        logger.info(f"Skipping single-atom ligand: {res_name}")
-                        continue
+                if _is_metal_ligand(residue):
+                    elements = [a.element.upper() if a.element else '?' for a in residue]
+                    logger.info(f"Found pure metal ligand: {res_name} ({', '.join(elements)})")
+                elif len(residue) == 1:
+                    logger.info(f"Skipping single-atom non-metal ligand: {res_name}")
+                    continue
 
                 if res_name not in ligand_residues:
                     ligand_residues[res_name] = []
@@ -289,7 +295,8 @@ def _build_rdkit_mol(atoms: List[MolfileAtom]) -> Chem.RWMol:
     conf = Chem.Conformer(len(atoms))
 
     for i, atom in enumerate(atoms):
-        rd_atom = Chem.Atom(atom.elem.capitalize() if len(atom.elem) == 1 else atom.elem)
+        # RDKit expects properly-cased element symbols (e.g. "Fe" not "FE")
+        rd_atom = Chem.Atom(atom.elem.capitalize())
         mol.AddAtom(rd_atom)
         conf.SetAtomPosition(i, (atom.x, atom.y, atom.z))
 
@@ -700,6 +707,9 @@ def main():
 
         logger.info("\nStep 3: Inferring bonds for each ligand...")
         for ligand in ligands:
+            if _is_metal_ligand(ligand.residue):
+                logger.info(f"  Skipping bond inference for pure metal: {ligand.sanitized_name}")
+                continue
             logger.info(f"  Processing {ligand.original_name} -> {ligand.sanitized_name}")
             ligand.bonds = infer_bonds(ligand.atoms, args.bond_tolerance)
 

@@ -102,6 +102,9 @@ def cmd_convert(args):
     logger.info(f"Found {len(ligands)} unique ligand type(s)")
 
     for ligand in ligands:
+        if _is_metal_ligand(ligand.residue):
+            logger.info(f"  Skipping bond inference for pure metal: {ligand.sanitized_name}")
+            continue
         logger.info(f"  Inferring bonds for {ligand.original_name}...")
         ligand.bonds = infer_bonds(ligand.atoms, args.bond_tolerance)
 
