@@ -41,6 +41,9 @@ def build_parser():
                                 help="Use cleaned original names instead of L01, L02")
     convert_parser.add_argument("--bond-tolerance", type=float, default=DEFAULT_BOND_TOLERANCE,
                                 help=f"Bond inference tolerance in Angstroms (default: {DEFAULT_BOND_TOLERANCE})")
+    convert_parser.add_argument("--output-dir", default=".",
+                                help="Directory to write output files (default: current directory)",
+                                metavar="DIR")
 
     # --- relax ---
     relax_parser = subparsers.add_parser(
@@ -92,8 +95,11 @@ def cmd_convert(args):
         logger.error(f"Input CIF file '{args.cif}' does not exist")
         return 1
 
+    os.makedirs(args.output_dir, exist_ok=True)
+    effective_prefix = os.path.join(args.output_dir, args.prefix)
+
     logger.info(f"AI to Params converter")
-    logger.info(f"Input: {args.cif}  Output prefix: {args.prefix}")
+    logger.info(f"Input: {args.cif}  Output: {args.output_dir}/{args.prefix}")
 
     structure = parse_cif_file(args.cif)
     logger.info(f"Parsed structure with {len(list(structure.get_models()))} model(s)")
@@ -119,11 +125,11 @@ def cmd_convert(args):
         if _is_metal_ligand(ligand.residue):
             continue
         ligand_chain_id = get_ligand_chain_id(ligand_index)
-        write_ligand_files(ligand, args.prefix, args.clobber, ligand_chain_id)
+        write_ligand_files(ligand, effective_prefix, args.clobber, ligand_chain_id)
 
     name_mapping = {lig.original_name: lig.sanitized_name for lig in ligands}
     chain_mapping = {lig.original_name: get_ligand_chain_id(i) for i, lig in enumerate(ligands)}
-    write_cleaned_complex_pdb(structure, name_mapping, chain_mapping, args.prefix, args.clobber)
+    write_cleaned_complex_pdb(structure, name_mapping, chain_mapping, effective_prefix, args.clobber)
 
     logger.info("Conversion complete!")
     return 0

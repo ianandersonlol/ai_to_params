@@ -118,14 +118,14 @@ class r3:
         n1 = normalize(n1)
         n2 = normalize(n2)
 
-        # Dot product for cosine
+        # Dot product for cosine — gives angle in [0°, 180°]
         cos_dihedral = n1.x*n2.x + n1.y*n2.y + n1.z*n2.z
         cos_dihedral = max(-1.0, min(1.0, cos_dihedral))
 
-        dihedral_rad = math.acos(abs(cos_dihedral))
+        dihedral_rad = math.acos(cos_dihedral)
         dihedral_deg = math.degrees(dihedral_rad)
 
-        # Determine sign
+        # Determine sign: cross(n1, n2) points along v2 for positive rotation
         test_cross = cross(n1, n2)
         if (test_cross.x*v2.x + test_cross.y*v2.y + test_cross.z*v2.z) < 0:
             dihedral_deg = -dihedral_deg

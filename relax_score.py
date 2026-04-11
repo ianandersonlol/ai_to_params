@@ -119,20 +119,32 @@ Examples:
 
 
 def find_input_files(args) -> Tuple[str, List[str]]:
-    """Find input PDB and params files based on arguments."""
+    """Find input PDB and params files based on arguments.
+
+    If --prefix is relative and --output-dir is set, files are looked up
+    inside --output-dir first (for interoperability with convert).
+    """
     if args.prefix:
-        pdb_file = f"{args.prefix}.pdb"
-        if not os.path.exists(pdb_file):
-            raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+        # Try output-dir first, then fall back to prefix as-given
+        candidates = []
+        if getattr(args, 'output_dir', None) and not os.path.isabs(args.prefix):
+            candidates.append(os.path.join(args.output_dir, args.prefix))
+        candidates.append(args.prefix)
 
-        params_files = glob.glob(f"{args.prefix}_*.params")
-        if not params_files:
-            raise FileNotFoundError(f"No params files found matching: {args.prefix}_*.params")
+        for candidate in candidates:
+            pdb_file = f"{candidate}.pdb"
+            if os.path.exists(pdb_file):
+                params_files = glob.glob(f"{candidate}_*.params")
+                if params_files:
+                    logger.info(f"Found input files:")
+                    logger.info(f"  PDB: {pdb_file}")
+                    logger.info(f"  Params: {', '.join(params_files)}")
+                    return pdb_file, params_files
 
-        logger.info(f"Found input files:")
-        logger.info(f"  PDB: {pdb_file}")
-        logger.info(f"  Params: {', '.join(params_files)}")
-        return pdb_file, params_files
+        raise FileNotFoundError(
+            f"Could not find {args.prefix}.pdb and {args.prefix}_*.params "
+            f"(looked in: {', '.join(candidates)})"
+        )
     else:
         pdb_file = args.pdb
         params_files = args.params.split(',')

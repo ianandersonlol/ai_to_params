@@ -100,6 +100,11 @@ Examples:
                         default=DEFAULT_BOND_TOLERANCE,
                         help=f"Bond inference tolerance in Angstroms (default: {DEFAULT_BOND_TOLERANCE})")
 
+    parser.add_argument("--output-dir",
+                        default=".",
+                        help="Directory to write output files (default: current directory)",
+                        metavar="DIR")
+
     parser.add_argument("-v", "--verbose",
                         action="store_true",
                         default=False,
@@ -691,8 +696,12 @@ def main():
         logger.error(f"Input CIF file '{args.cif}' does not exist")
         return 1
 
+    os.makedirs(args.output_dir, exist_ok=True)
+    effective_prefix = os.path.join(args.output_dir, args.prefix)
+
     logger.info(f"AI to Params converter")
     logger.info(f"Input CIF file: {args.cif}")
+    logger.info(f"Output directory: {args.output_dir}")
     logger.info(f"Output prefix: {args.prefix}")
     logger.info(f"Overwrite existing files: {args.clobber}")
 
@@ -730,12 +739,12 @@ def main():
 
             logger.info(f"  Writing files for {ligand.sanitized_name}...")
             ligand_chain_id = get_ligand_chain_id(ligand_index)
-            write_ligand_files(ligand, args.prefix, args.clobber, ligand_chain_id)
+            write_ligand_files(ligand, effective_prefix, args.clobber, ligand_chain_id)
 
         logger.info("\nStep 6: Writing complex PDB...")
         name_mapping = {lig.original_name: lig.sanitized_name for lig in ligands}
         chain_mapping = {lig.original_name: get_ligand_chain_id(i) for i, lig in enumerate(ligands)}
-        write_cleaned_complex_pdb(structure, name_mapping, chain_mapping, args.prefix, args.clobber)
+        write_cleaned_complex_pdb(structure, name_mapping, chain_mapping, effective_prefix, args.clobber)
 
         logger.info("Conversion completed successfully!")
         return 0
