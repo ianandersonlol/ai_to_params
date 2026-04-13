@@ -62,6 +62,21 @@ def build_parser():
     relax_parser.add_argument("--no-coord-constraints", action="store_true")
     relax_parser.add_argument("--output-dir", default=".", metavar="DIR")
 
+    # --- score ---
+    score_parser = subparsers.add_parser(
+        "score",
+        help="Score a protein-ligand complex without relaxing",
+        description="Score a pose directly and compute interface energies (no FastRelax).",
+    )
+    score_input = score_parser.add_mutually_exclusive_group(required=True)
+    score_input.add_argument("--prefix", help="Prefix for ai_to_params output", metavar="PREFIX")
+    score_input.add_argument("--pdb", help="Path to input PDB file", metavar="FILE")
+    score_parser.add_argument("--params", help="Comma-separated .params files (with --pdb)", metavar="FILES")
+    score_parser.add_argument("--score-function", default="ref2015",
+                              help="Rosetta score function (default: ref2015)")
+    score_parser.add_argument("--output-dir", default=".", metavar="DIR",
+                              help="Directory to write summary CSV (default: current directory)")
+
     # --- run (full pipeline) ---
     run_parser = subparsers.add_parser(
         "run",
@@ -200,6 +215,59 @@ def cmd_relax(args):
     return 0
 
 
+def cmd_score(args):
+    """Score a complex without relaxation."""
+    from relax_score import (
+        find_input_files, init_pyrosetta, detect_ligand_chains,
+        create_score_function, score_pose, calculate_interface_energy,
+        write_summary_csv,
+    )
+    from pyrosetta import pose_from_pdb
+
+    if args.pdb and not args.params:
+        logger.error("--params is required when using --pdb")
+        return 1
+
+    pdb_file, params_files = find_input_files(args)
+    output_prefix = args.prefix or os.path.splitext(os.path.basename(pdb_file))[0]
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Score without the _cart suffix since there's no cartesian minimization
+    init_pyrosetta(params_files, args.score_function, cartesian=False)
+    pose = pose_from_pdb(pdb_file)
+    sfxn = create_score_function(args.score_function, cartesian=False)
+
+    ligands = detect_ligand_chains(pose, params_files)
+    if ligands:
+        logger.info(f"\nDetected {len(ligands)} ligand(s):")
+        for lig in ligands:
+            logger.info(f"  Chain {lig.chain_id}: {lig.residue_name} ({lig.params_file})")
+
+    logger.info(f"\nScoring (no relaxation)...")
+    total_score = score_pose(pose, sfxn)
+    logger.info(f"  Total score: {total_score:.2f}")
+
+    result = {
+        'structure': os.path.basename(pdb_file),
+        'total_score': f"{total_score:.2f}",
+    }
+
+    for lig in ligands:
+        try:
+            ie = calculate_interface_energy(pose, sfxn, lig.chain_id)
+            logger.info(f"  Interface dG (chain {lig.chain_id}): {ie:.2f}")
+            result[f'interface_delta_chain_{lig.chain_id}'] = f"{ie:.2f}"
+        except Exception as e:
+            logger.error(f"  Interface energy error (chain {lig.chain_id}): {e}")
+            result[f'interface_delta_chain_{lig.chain_id}'] = "ERROR"
+
+    summary_csv = os.path.join(args.output_dir, f"{output_prefix}_score.csv")
+    write_summary_csv([result], summary_csv)
+    logger.info(f"\nDone. Summary: {summary_csv}")
+    return 0
+
+
 def cmd_run(args):
     """Run the full pipeline: convert -> relax -> score."""
     # Step 1: Convert
@@ -239,6 +307,7 @@ def main():
 
     commands = {
         "convert": cmd_convert,
+        "score": cmd_score,
         "relax": cmd_relax,
         "run": cmd_run,
     }
