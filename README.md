@@ -43,7 +43,7 @@ If you prefer not to install the package, ensure these files stay together in th
 
 ## Usage
 
-The tool provides a unified CLI with three subcommands:
+The tool provides a unified CLI with four subcommands: `convert`, `relax`, `score`, and `run`.
 
 ### Convert (CIF to params)
 
@@ -61,8 +61,9 @@ ai-to-params convert -cif input.cif -prefix output --clobber --clean-names
 | `--clobber` | Allow overwriting existing files |
 | `--clean-names` | Use cleaned original names (ATP, GTP) instead of systematic names (L01, L02) |
 | `--bond-tolerance FLOAT` | Bond inference tolerance in Angstroms (default: 0.45) |
+| `--output-dir DIR` | Directory to write output files (default: `.`) |
 
-### Relax and Score (PyRosetta)
+### Relax (PyRosetta)
 
 ```bash
 # Using ai_to_params output (auto-discovers PDB and params files)
@@ -89,6 +90,30 @@ ai-to-params relax --prefix my_complex --constraints catalytic.cst --relax-mode 
 | `--no-coord-constraints` | Disable coordinate constraints |
 | `--output-dir DIR` | Output directory (default: `.`) |
 
+### Score (PyRosetta, no relaxation)
+
+Score a pose directly and compute interface energies without running FastRelax. Useful for quick evaluation of AI-predicted complexes.
+
+```bash
+# Using ai_to_params output
+ai-to-params score --prefix my_complex
+
+# With explicit files
+ai-to-params score --pdb complex.pdb --params L01.params,L02.params
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--prefix PREFIX` | Prefix for ai_to_params output (mutually exclusive with `--pdb`) |
+| `--pdb FILE` | Path to input PDB file (mutually exclusive with `--prefix`) |
+| `--params FILES` | Comma-separated .params files (required with `--pdb`) |
+| `--score-function` | Rosetta score function (default: `ref2015`) |
+| `--output-dir DIR` | Directory to write summary CSV (default: `.`) |
+
+Writes `{prefix}_score.csv` with total score and per-ligand interface energies.
+
 ### Full Pipeline (convert + relax)
 
 ```bash
@@ -111,6 +136,9 @@ ai-to-params run -cif AF3_output.cif -prefix my_complex --nstruct 5
 
 # Relax with torsional mode and constraints
 ai-to-params relax --prefix my_complex --relax-mode torsional --constraints design.cst
+
+# Score a predicted complex without relaxation
+ai-to-params score --prefix my_complex
 ```
 
 ## Output Files
@@ -123,6 +151,9 @@ ai-to-params relax --prefix my_complex --relax-mode torsional --constraints desi
 ### From `relax`
 - `{prefix}_relaxed_NNNN.pdb` - Relaxed structures (one per nstruct)
 - `{prefix}_summary.csv` - Scoring summary (total score, RMSD, interface energies)
+
+### From `score`
+- `{prefix}_score.csv` - Total score and per-ligand interface energies (no relaxation)
 
 ### File Naming Strategy
 - **Filenames** use original ligand names from the CIF file (user-friendly)
@@ -168,7 +199,7 @@ Creates Rosetta-compatible `.params` files and cleaned PDB structures.
 - Bonds are inferred from 3D coordinates via RDKit
 
 ### Metal Ligands
-- Single-atom metals (MG, ZN, FE, etc.) are identified but not parameterized
+- Metal residues (MG, ZN, FE, CA, etc.), including multi-atom metal clusters, are identified but not parameterized
 - Skipped during file generation (metals don't need `.params` files in Rosetta)
 - Still included in complex PDB with proper naming
 
