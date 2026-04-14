@@ -3,9 +3,10 @@
 Unified CLI for ai_to_params: convert, relax, and full pipeline.
 
 Usage:
-    ai-to-params convert -cif input.cif -prefix output_prefix [options]
+    ai-to-params convert -i input.cif -prefix output_prefix [options]
+    ai-to-params convert -i input.pdb -prefix output_prefix [options]
     ai-to-params relax --prefix output_prefix [options]
-    ai-to-params run -cif input.cif -prefix output_prefix [options]
+    ai-to-params run -i input.cif -prefix output_prefix [options]
 """
 
 import sys
@@ -34,7 +35,10 @@ def build_parser():
         help="Convert mmCIF to Rosetta .params files",
         description="Parse mmCIF files from AI tools and generate Rosetta .params files.",
     )
-    convert_parser.add_argument("-cif", "--cif", required=True, help="Input mmCIF file", metavar="FILE")
+    convert_parser.add_argument("-cif", "--cif", "--input", "-i",
+                                required=True, dest="input_file",
+                                help="Input structure file (.cif, .mmcif, .pdb, or .ent)",
+                                metavar="FILE")
     convert_parser.add_argument("-prefix", "--prefix", required=True, help="Output prefix", metavar="PREFIX")
     convert_parser.add_argument("--clobber", action="store_true", help="Overwrite existing files")
     convert_parser.add_argument("--clean-names", action="store_true",
@@ -83,7 +87,10 @@ def build_parser():
         help="Full pipeline: convert CIF -> params -> relax -> score",
         description="Run the complete pipeline from mmCIF input to relaxed, scored structures.",
     )
-    run_parser.add_argument("-cif", "--cif", required=True, help="Input mmCIF file", metavar="FILE")
+    run_parser.add_argument("-cif", "--cif", "--input", "-i",
+                            required=True, dest="input_file",
+                            help="Input structure file (.cif, .mmcif, .pdb, or .ent)",
+                            metavar="FILE")
     run_parser.add_argument("-prefix", "--prefix", required=True, help="Output prefix", metavar="PREFIX")
     run_parser.add_argument("--clobber", action="store_true", help="Overwrite existing files")
     run_parser.add_argument("--clean-names", action="store_true")
@@ -101,22 +108,22 @@ def build_parser():
 def cmd_convert(args):
     """Run the convert subcommand."""
     from ai_to_params import (
-        parse_cif_file, identify_and_extract_ligands, infer_bonds,
+        parse_structure_file, identify_and_extract_ligands, infer_bonds,
         parameterize_ligand, write_ligand_files, write_cleaned_complex_pdb,
         get_ligand_chain_id, _is_metal_ligand,
     )
 
-    if not os.path.exists(args.cif):
-        logger.error(f"Input CIF file '{args.cif}' does not exist")
+    if not os.path.exists(args.input_file):
+        logger.error(f"Input structure file '{args.input_file}' does not exist")
         return 1
 
     os.makedirs(args.output_dir, exist_ok=True)
     effective_prefix = os.path.join(args.output_dir, args.prefix)
 
     logger.info(f"AI to Params converter")
-    logger.info(f"Input: {args.cif}  Output: {args.output_dir}/{args.prefix}")
+    logger.info(f"Input: {args.input_file}  Output: {args.output_dir}/{args.prefix}")
 
-    structure = parse_cif_file(args.cif)
+    structure = parse_structure_file(args.input_file)
     logger.info(f"Parsed structure with {len(list(structure.get_models()))} model(s)")
 
     ligands = identify_and_extract_ligands(structure, args.clean_names)

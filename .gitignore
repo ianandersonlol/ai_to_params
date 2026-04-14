@@ -33,3 +33,6 @@ venv.bak/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Validation/benchmarking work — keep local
+Validation/

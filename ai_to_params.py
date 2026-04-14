@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Set
 
-from Bio.PDB import MMCIFParser, Structure, Model, Chain, Residue, Atom
+from Bio.PDB import MMCIFParser, PDBParser, Structure, Model, Chain, Residue, Atom
 from Bio.PDB.Atom import Atom as BioPythonAtom
 from Bio.PDB.Residue import Residue as BioPythonResidue
 
@@ -66,18 +66,19 @@ class LigandData:
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description="Convert AI modeling outputs (AlphaFold3, Chai) to Rosetta params files",
+        description="Convert AI modeling outputs (AlphaFold3, Chai, Boltz) to Rosetta params files",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     python ai_to_params.py -cif AF3_output.cif -prefix my_complex
-    python ai_to_params.py -cif Chai_output.cif -prefix ligand_set --clobber
+    python ai_to_params.py -cif Chai_output.pdb -prefix ligand_set --clobber
         """
     )
 
-    parser.add_argument("-cif", "--cif",
+    parser.add_argument("-cif", "--cif", "--input", "-i",
                         required=True,
-                        help="Path to input mmCIF file from AI modeling tools",
+                        dest="input_file",
+                        help="Path to input structure file (.cif, .mmcif, .pdb, or .ent)",
                         metavar="FILE")
 
     parser.add_argument("-prefix", "--prefix",
@@ -113,24 +114,39 @@ Examples:
     return parser.parse_args()
 
 
-def parse_cif_file(cif_path: str) -> Structure:
+def parse_structure_file(path: str) -> Structure:
     """
-    Parse an mmCIF file and return a BioPython Structure object
+    Parse an mmCIF or PDB file and return a BioPython Structure object.
+
+    Format is auto-detected from the file extension.
 
     Args:
-        cif_path: Path to the mmCIF file
+        path: Path to a .cif/.mmcif or .pdb/.ent file
 
     Returns:
         BioPython Structure object
     """
-    parser = MMCIFParser(QUIET=True)
-    structure_id = os.path.splitext(os.path.basename(cif_path))[0]
-    structure = parser.get_structure(structure_id, cif_path)
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.cif', '.mmcif'):
+        parser = MMCIFParser(QUIET=True)
+    elif ext in ('.pdb', '.ent'):
+        parser = PDBParser(QUIET=True)
+    else:
+        raise ValueError(
+            f"Unsupported file extension '{ext}'. Use .cif/.mmcif or .pdb/.ent"
+        )
+
+    structure_id = os.path.splitext(os.path.basename(path))[0]
+    structure = parser.get_structure(structure_id, path)
 
     if structure is None:
-        raise ValueError(f"Failed to parse CIF file - structure is None")
+        raise ValueError(f"Failed to parse structure file '{path}'")
 
     return structure
+
+
+# Backward-compatible alias
+parse_cif_file = parse_structure_file
 
 
 def clean_ligand_name(original_name: str) -> str:
@@ -692,22 +708,22 @@ def main():
         format="%(message)s",
     )
 
-    if not os.path.exists(args.cif):
-        logger.error(f"Input CIF file '{args.cif}' does not exist")
+    if not os.path.exists(args.input_file):
+        logger.error(f"Input structure file '{args.input_file}' does not exist")
         return 1
 
     os.makedirs(args.output_dir, exist_ok=True)
     effective_prefix = os.path.join(args.output_dir, args.prefix)
 
     logger.info(f"AI to Params converter")
-    logger.info(f"Input CIF file: {args.cif}")
+    logger.info(f"Input file: {args.input_file}")
     logger.info(f"Output directory: {args.output_dir}")
     logger.info(f"Output prefix: {args.prefix}")
     logger.info(f"Overwrite existing files: {args.clobber}")
 
     try:
-        logger.info("\nStep 1: Parsing CIF file...")
-        structure = parse_cif_file(args.cif)
+        logger.info("\nStep 1: Parsing structure file...")
+        structure = parse_structure_file(args.input_file)
         logger.info(f"Successfully parsed structure with {len(list(structure.get_models()))} model(s)")
 
         logger.info("\nStep 2: Identifying and extracting ligands...")
