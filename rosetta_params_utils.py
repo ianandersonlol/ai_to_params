@@ -8,7 +8,7 @@ Contains the core chemical parameterization logic without the main() interface.
 
 Original Author: Ian W. Davis
 Extracted and adapted from molfile_to_params.py for CIF processing.
-Many thanks to Ian W. Davis for developing the comprehensive Rosetta parameterization framework.
+Many thanks to Ian W. Davis(From a Fellow Ian) for developing the comprehensive Rosetta parameterization framework.
 """
 import os
 import sys
