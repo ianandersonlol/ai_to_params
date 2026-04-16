@@ -1,13 +1,13 @@
 # AI to Params
 
-A tool for converting AI-generated protein-ligand complexes to Rosetta params files, with optional relaxation and scoring via PyRosetta. This utility processes mmCIF files from AI modeling tools like AlphaFold3 and Chai, identifies ligand molecules, infers their bonds (using RDKit for proper bond orders), and generates Rosetta `.params` files for molecular dynamics simulations.
+A tool for converting AI-generated protein-ligand complexes to Rosetta params files, with optional relaxation and scoring via PyRosetta. This utility processes mmCIF and PDB files from AI modeling tools like AlphaFold3, Chai, and Boltz, identifies ligand molecules, infers their bonds (using RDKit for proper bond orders), and generates Rosetta `.params` files for molecular dynamics simulations.
 
 ## Installation
 
 ### Prerequisites
 
 - Python 3.8+
-- BioPython for mmCIF file parsing
+- BioPython for structure file parsing (mmCIF and PDB)
 - RDKit for bond order inference
 
 ### Via `pip` (recommended)
@@ -45,18 +45,18 @@ If you prefer not to install the package, ensure these files stay together in th
 
 The tool provides a unified CLI with four subcommands: `convert`, `relax`, `score`, and `run`.
 
-### Convert (CIF to params)
+### Convert (structure to params)
 
 ```bash
-ai-to-params convert -cif input.cif -prefix output_prefix
-ai-to-params convert -cif input.cif -prefix output --clobber --clean-names
+ai-to-params convert -i input.cif -prefix output_prefix
+ai-to-params convert -i input.pdb -prefix output --clobber --clean-names
 ```
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `-cif FILE` | Input mmCIF file (required) |
+| `-i FILE`, `-cif FILE` | Input structure file: `.cif`, `.mmcif`, `.pdb`, or `.ent` (required) |
 | `-prefix PREFIX` | Output prefix for generated files (required) |
 | `--clobber` | Allow overwriting existing files |
 | `--clean-names` | Use cleaned original names (ATP, GTP) instead of systematic names (L01, L02) |
@@ -117,7 +117,7 @@ Writes `{prefix}_score.csv` with total score and per-ligand interface energies.
 ### Full Pipeline (convert + relax)
 
 ```bash
-ai-to-params run -cif input.cif -prefix output --nstruct 3
+ai-to-params run -i input.cif -prefix output --nstruct 3
 ```
 
 Accepts all options from both `convert` and `relax`.
@@ -125,14 +125,17 @@ Accepts all options from both `convert` and `relax`.
 ### Examples
 
 ```bash
-# Convert AlphaFold3 output
-ai-to-params convert -cif AF3_output.cif -prefix my_complex
+# Convert AlphaFold3 output (mmCIF)
+ai-to-params convert -i AF3_output.cif -prefix my_complex
+
+# Convert Boltz output (PDB)
+ai-to-params convert -i boltz_output.pdb -prefix my_complex
 
 # Convert Chai output with original ligand names
-ai-to-params convert -cif Chai_output.cif -prefix ligand_set --clean-names
+ai-to-params convert -i Chai_output.cif -prefix ligand_set --clean-names
 
 # Full pipeline: convert, relax 5 structures, and score
-ai-to-params run -cif AF3_output.cif -prefix my_complex --nstruct 5
+ai-to-params run -i AF3_output.cif -prefix my_complex --nstruct 5
 
 # Relax with torsional mode and constraints
 ai-to-params relax --prefix my_complex --relax-mode torsional --constraints design.cst
@@ -162,8 +165,8 @@ ai-to-params score --prefix my_complex
 
 ## How It Works
 
-### 1. CIF Parsing
-Parses mmCIF files using BioPython to extract atomic coordinates and residue information.
+### 1. Structure Parsing
+Parses mmCIF (`.cif`, `.mmcif`) or PDB (`.pdb`, `.ent`) files using BioPython to extract atomic coordinates and residue information. The format is auto-detected from the file extension.
 
 ### 2. Ligand Identification
 - Identifies HETATM records (non-standard residues)
