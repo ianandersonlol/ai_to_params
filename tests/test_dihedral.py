@@ -63,6 +63,7 @@ class TestDihedral:
 
         The abs() bug collapsed this 180° dihedral to 0°, causing
         sulfurs to stack on top of each other in the output PDB.
+        WHYYYYYYYYYYY DOESN'T THIS WANT TO WORK??!?!!?!?!?!?!?!?!?!!?!?!
         """
         s1 = _pt(0.0, 1.1, 0.0)
         fe1 = _pt(0.0, 0.0, 0.0)
