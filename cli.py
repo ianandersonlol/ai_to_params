@@ -62,7 +62,12 @@ def build_parser():
     relax_parser.add_argument("--nstruct", type=int, default=1, help="Number of structures (default: 1)")
     relax_parser.add_argument("--relax-mode", choices=["cartesian", "torsional"], default="cartesian")
     relax_parser.add_argument("--score-function", default="ref2015")
-    relax_parser.add_argument("--constraints", help="Constraint file", metavar="FILE")
+    relax_parser.add_argument("--constraints",
+                              help="Constraint file (plain Rosetta csts or enzdes CST::BEGIN blocks)",
+                              metavar="FILE")
+    relax_parser.add_argument("--cst-weight", type=float, default=1.0,
+                              help="Weight on atom_pair/angle/dihedral/coordinate constraint "
+                                   "terms when --constraints is used (default: 1.0)")
     relax_parser.add_argument("--no-coord-constraints", action="store_true")
     relax_parser.add_argument("--output-dir", default=".", metavar="DIR")
 
@@ -98,7 +103,12 @@ def build_parser():
     run_parser.add_argument("--nstruct", type=int, default=1, help="Number of relaxed structures (default: 1)")
     run_parser.add_argument("--relax-mode", choices=["cartesian", "torsional"], default="cartesian")
     run_parser.add_argument("--score-function", default="ref2015")
-    run_parser.add_argument("--constraints", help="Constraint file", metavar="FILE")
+    run_parser.add_argument("--constraints",
+                            help="Constraint file (plain Rosetta csts or enzdes CST::BEGIN blocks)",
+                            metavar="FILE")
+    run_parser.add_argument("--cst-weight", type=float, default=1.0,
+                            help="Weight on atom_pair/angle/dihedral/coordinate constraint "
+                                 "terms when --constraints is used (default: 1.0)")
     run_parser.add_argument("--no-coord-constraints", action="store_true")
     run_parser.add_argument("--output-dir", default=".", metavar="DIR")
 
@@ -162,8 +172,8 @@ def cmd_relax(args):
     from relax_score import (
         find_input_files, init_pyrosetta, detect_ligand_chains,
         create_score_function, setup_fast_relax, apply_constraints,
-        relax_pose, score_pose, calculate_interface_energy,
-        calculate_rmsd, write_summary_csv,
+        enable_constraint_weights, relax_pose, score_pose,
+        calculate_interface_energy, calculate_rmsd, write_summary_csv,
     )
     from pyrosetta import pose_from_pdb
 
@@ -183,9 +193,13 @@ def cmd_relax(args):
 
     if args.constraints:
         apply_constraints(input_pose, args.constraints)
+        enable_constraint_weights(sfxn, args.cst_weight)
 
     ligands = detect_ligand_chains(input_pose, params_files)
-    relax_mover = setup_fast_relax(sfxn, cartesian, not args.no_coord_constraints)
+    relax_mover = setup_fast_relax(
+        sfxn, cartesian, not args.no_coord_constraints,
+        ramp_down_constraints=not bool(args.constraints),
+    )
 
     all_results = []
     for struct_num in range(1, args.nstruct + 1):

@@ -72,8 +72,9 @@ ai-to-params relax --prefix my_complex --nstruct 5
 # With explicit files
 ai-to-params relax --pdb complex.pdb --params L01.params,L02.params
 
-# With constraints
+# With catalytic constraints (plain Rosetta csts or enzdes-style CST::BEGIN blocks)
 ai-to-params relax --prefix my_complex --constraints catalytic.cst --relax-mode torsional
+ai-to-params relax --prefix my_complex --constraints theozyme.cst --cst-weight 1.0
 ```
 
 **Options:**
@@ -86,9 +87,12 @@ ai-to-params relax --prefix my_complex --constraints catalytic.cst --relax-mode 
 | `--nstruct N` | Number of structures to generate (default: 1) |
 | `--relax-mode` | `cartesian` (default) or `torsional` |
 | `--score-function` | Rosetta score function (default: `ref2015`) |
-| `--constraints FILE` | Constraint file for relaxation |
+| `--constraints FILE` | Constraint file. Auto-detects plain Rosetta csts vs enzdes matcher csts (`CST::BEGIN` blocks). Enzdes files need REMARK 666 catalytic-residue headers in the input PDB. |
+| `--cst-weight FLOAT` | Weight applied to `atom_pair/angle/dihedral/coordinate_constraint` score terms when `--constraints` is used (default: 1.0). Constraints have no effect without this. |
 | `--no-coord-constraints` | Disable coordinate constraints |
 | `--output-dir DIR` | Output directory (default: `.`) |
+
+When `--constraints` is provided, the relevant constraint score terms are turned on at `--cst-weight` and FastRelax is run with `ramp_down_constraints=False` so catalytic restraints survive the full relax ramp.
 
 ### Score (PyRosetta, no relaxation)
 
@@ -137,8 +141,11 @@ ai-to-params convert -i Chai_output.cif -prefix ligand_set --clean-names
 # Full pipeline: convert, relax 5 structures, and score
 ai-to-params run -i AF3_output.cif -prefix my_complex --nstruct 5
 
-# Relax with torsional mode and constraints
+# Relax with torsional mode and catalytic constraints
 ai-to-params relax --prefix my_complex --relax-mode torsional --constraints design.cst
+
+# Relax with enzdes-style theozyme constraints at a reduced weight
+ai-to-params relax --prefix my_complex --constraints theozyme.cst --cst-weight 0.5
 
 # Score a predicted complex without relaxation
 ai-to-params score --prefix my_complex

@@ -29,6 +29,13 @@ from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.core.pack.task import TaskFactory
 from pyrosetta.rosetta.protocols.constraint_movers import ConstraintSetMover
 
+CONSTRAINT_SCORE_TERMS = (
+    "atom_pair_constraint",
+    "angle_constraint",
+    "dihedral_constraint",
+    "coordinate_constraint",
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,8 +82,13 @@ Examples:
 
     constraint_group = parser.add_argument_group('Constraint options')
     constraint_group.add_argument("--constraints",
-                                 help="Path to Rosetta constraint file",
+                                 help="Path to Rosetta constraint file (plain or enzdes-style)",
                                  metavar="FILE")
+    constraint_group.add_argument("--cst-weight",
+                                 type=float,
+                                 default=1.0,
+                                 help="Weight applied to atom_pair/angle/dihedral/coordinate "
+                                      "constraint score terms when --constraints is used (default: 1.0)")
     constraint_group.add_argument("--no-coord-constraints",
                                  action="store_true",
                                  help="Disable coordinate constraints (allow structure to move freely)")
@@ -235,7 +247,8 @@ def create_score_function(base_name: str = "ref2015", cartesian: bool = True) ->
 
 
 def setup_fast_relax(sfxn: ScoreFunction, cartesian: bool = True,
-                     constrain_to_start: bool = True) -> FastRelax:
+                     constrain_to_start: bool = True,
+                     ramp_down_constraints: bool = True) -> FastRelax:
     """
     Configure FastRelax with appropriate settings.
 
@@ -243,12 +256,15 @@ def setup_fast_relax(sfxn: ScoreFunction, cartesian: bool = True,
         sfxn: Score function to use
         cartesian: Whether to use cartesian relaxation
         constrain_to_start: Whether to constrain to starting coordinates
+        ramp_down_constraints: If False, keep constraint weights constant across
+            the FastRelax ramp (required for catalytic constraints to survive).
 
     Returns:
         Configured FastRelax mover
     """
     relax = FastRelax()
     relax.set_scorefxn(sfxn)
+    relax.ramp_down_constraints(ramp_down_constraints)
 
     if cartesian:
         relax.cartesian(True)
@@ -262,12 +278,76 @@ def setup_fast_relax(sfxn: ScoreFunction, cartesian: bool = True,
     return relax
 
 
+def is_enzdes_cst_file(constraint_file: str) -> bool:
+    """Return True if the file looks like an enzdes matcher cst (has CST::BEGIN)."""
+    with open(constraint_file, 'r') as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            if stripped.startswith('CST::BEGIN'):
+                return True
+    return False
+
+
 def apply_constraints(pose: Pose, constraint_file: str):
-    """Apply constraints from a file to a pose."""
-    cst_mover = ConstraintSetMover()
-    cst_mover.constraint_file(constraint_file)
-    cst_mover.apply(pose)
-    logger.info(f"Applied constraints from {constraint_file}")
+    """Apply constraints from a file to a pose.
+
+    Auto-detects enzdes-style (CST::BEGIN blocks) vs plain Rosetta cst files.
+    Enzdes files require REMARK 666 headers in the pose to place catalytic residues.
+    """
+    if is_enzdes_cst_file(constraint_file):
+        from pyrosetta.rosetta.protocols.enzdes import AddOrRemoveMatchCsts
+        if not _pose_has_remark_666(pose):
+            logger.warning(
+                "Enzdes cst file detected but pose has no REMARK 666 records; "
+                "AddOrRemoveMatchCsts may not find catalytic residues."
+            )
+        enz_mover = AddOrRemoveMatchCsts()
+        enz_mover.cstfile(constraint_file)
+        try:
+            from pyrosetta.rosetta.protocols.enzdes import CstAction
+            enz_mover.set_cst_action(CstAction.ADD_NEW)
+        except (ImportError, AttributeError):
+            enz_mover.set_cst_action(1)  # ADD_NEW enum value
+        enz_mover.apply(pose)
+        logger.info(f"Applied enzdes catalytic constraints from {constraint_file}")
+    else:
+        cst_mover = ConstraintSetMover()
+        cst_mover.constraint_file(constraint_file)
+        cst_mover.apply(pose)
+        logger.info(f"Applied constraints from {constraint_file}")
+
+
+def _pose_has_remark_666(pose: Pose) -> bool:
+    """Check the pose's PDB remarks for REMARK 666 (enzdes catalytic residue header)."""
+    pdb_info = pose.pdb_info()
+    if pdb_info is None:
+        return False
+    remarks = pdb_info.remarks()
+    for i in range(len(remarks)):
+        if remarks[i].num == 666:
+            return True
+    return False
+
+
+def enable_constraint_weights(sfxn: ScoreFunction, weight: float = 1.0) -> None:
+    """Set the four constraint score terms on a score function to `weight`.
+
+    Without this, constraints applied via ConstraintSetMover/AddOrRemoveMatchCsts
+    have zero effect on scoring and minimization.
+    """
+    from pyrosetta.rosetta.core.scoring import ScoreType
+    term_lookup = {
+        "atom_pair_constraint": ScoreType.atom_pair_constraint,
+        "angle_constraint": ScoreType.angle_constraint,
+        "dihedral_constraint": ScoreType.dihedral_constraint,
+        "coordinate_constraint": ScoreType.coordinate_constraint,
+    }
+    for term_name in CONSTRAINT_SCORE_TERMS:
+        sfxn.set_weight(term_lookup[term_name], weight)
+    logger.info(f"Enabled constraint score terms at weight {weight}: "
+                f"{', '.join(CONSTRAINT_SCORE_TERMS)}")
 
 
 def relax_pose(pose: Pose, relax_mover: FastRelax) -> Pose:
@@ -449,6 +529,7 @@ def main():
     # Apply user constraints if provided
     if args.constraints:
         apply_constraints(input_pose, args.constraints)
+        enable_constraint_weights(sfxn, args.cst_weight)
 
     # Detect ligands
     ligands = detect_ligand_chains(input_pose, params_files)
@@ -459,8 +540,11 @@ def main():
     else:
         logger.info("\nNo ligands detected. Will perform relaxation and scoring only.")
 
-    # Setup FastRelax
-    relax_mover = setup_fast_relax(sfxn, cartesian, constrain)
+    # Setup FastRelax (don't ramp down constraints if user supplied any)
+    relax_mover = setup_fast_relax(
+        sfxn, cartesian, constrain,
+        ramp_down_constraints=not bool(args.constraints),
+    )
 
     logger.info(f"\nRelaxation settings:")
     logger.info(f"  Mode: {args.relax_mode}")

@@ -9,6 +9,8 @@ molfile_to_params.py
 *gemini*.md
 *Claude*.md
 *Gemini*.md
+CLAUDE.md
+GEMINI.md
 
 # Python cache
 __pycache__/
