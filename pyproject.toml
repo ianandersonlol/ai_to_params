@@ -21,6 +21,9 @@ dependencies = [
 relax = [
   "pyrosetta",
 ]
+plip = [
+  "plip>=3.0.0",
+]
 dev = [
   "pytest>=7.0",
 ]
@@ -34,7 +37,7 @@ ai-to-params-relax = "relax_score:main"
 Homepage = "https://github.com/SiegelLab/general_protein_ml"
 
 [tool.setuptools]
-py-modules = ["ai_to_params", "rosetta_params_utils", "constants", "relax_score", "cli"]
+py-modules = ["ai_to_params", "rosetta_params_utils", "constants", "relax_score", "plip_analysis", "cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -105,6 +105,16 @@ Examples:
     relax_group.add_argument("--score-function",
                             default="ref2015",
                             help="Rosetta score function (default: ref2015, auto-appends _cart for cartesian)")
+    relax_group.add_argument("--free-sidechains",
+                            action="store_true",
+                            help="Skip coord_constrain_sidechains so chi can repack freely "
+                                 "(backbone is still constrained via constrain_relax_to_start_coords). "
+                                 "BindCraft-style.")
+    relax_group.add_argument("--max-iter",
+                            type=int,
+                            default=None,
+                            help="FastRelax max iterations per cycle (default: PyRosetta default 2500). "
+                                 "BindCraft uses 200.")
 
     output_group = parser.add_argument_group('Output options')
     output_group.add_argument("--output-dir",
@@ -248,7 +258,9 @@ def create_score_function(base_name: str = "ref2015", cartesian: bool = True) ->
 
 def setup_fast_relax(sfxn: ScoreFunction, cartesian: bool = True,
                      constrain_to_start: bool = True,
-                     ramp_down_constraints: bool = True) -> FastRelax:
+                     ramp_down_constraints: bool = True,
+                     free_sidechains: bool = False,
+                     max_iter: int = None) -> FastRelax:
     """
     Configure FastRelax with appropriate settings.
 
@@ -273,7 +285,11 @@ def setup_fast_relax(sfxn: ScoreFunction, cartesian: bool = True,
 
     if constrain_to_start:
         relax.constrain_relax_to_start_coords(True)
-        relax.coord_constrain_sidechains(True)
+        if not free_sidechains:
+            relax.coord_constrain_sidechains(True)
+
+    if max_iter is not None:
+        relax.max_iter(max_iter)
 
     return relax
 
@@ -544,6 +560,8 @@ def main():
     relax_mover = setup_fast_relax(
         sfxn, cartesian, constrain,
         ramp_down_constraints=not bool(args.constraints),
+        free_sidechains=args.free_sidechains,
+        max_iter=args.max_iter,
     )
 
     logger.info(f"\nRelaxation settings:")

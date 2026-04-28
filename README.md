@@ -1,6 +1,6 @@
 # AI to Params
 
-A tool for converting AI-generated protein-ligand complexes to Rosetta params files, with optional relaxation and scoring via PyRosetta. This utility processes mmCIF and PDB files from AI modeling tools like AlphaFold3, Chai, and Boltz, identifies ligand molecules, infers their bonds (using RDKit for proper bond orders), and generates Rosetta `.params` files for molecular dynamics simulations.
+A tool for converting AI-generated protein-ligand complexes to Rosetta params files, with optional relaxation/scoring via PyRosetta and interaction analysis via PLIP. This utility processes mmCIF and PDB files from AI modeling tools like AlphaFold3, Chai, and Boltz, identifies ligand molecules, infers their bonds (using RDKit for proper bond orders), and generates Rosetta `.params` files for molecular dynamics simulations.
 
 ## Installation
 
@@ -31,6 +31,16 @@ conda install pyrosetta
 pip install -e ".[relax]"
 ```
 
+### With PLIP analysis support
+
+PLIP is optional and must already be installed in the Python environment you use to run `ai-to-params`. The CLI does not activate a default conda environment or assume a local PLIP path; activate your own PLIP-capable environment before running PLIP analysis.
+
+```bash
+# Example only: use the environment/package manager appropriate for your system
+conda activate your-plip-env
+pip install -e .
+```
+
 ### Direct script usage
 
 If you prefer not to install the package, ensure these files stay together in the same directory:
@@ -40,10 +50,11 @@ If you prefer not to install the package, ensure these files stay together in th
 - `constants.py` - Shared constants
 - `cli.py` - Unified CLI entry point
 - `relax_score.py` - PyRosetta relaxation and scoring
+- `plip_analysis.py` - Optional PLIP interaction analysis
 
 ## Usage
 
-The tool provides a unified CLI with four subcommands: `convert`, `relax`, `score`, and `run`.
+The tool provides a unified CLI with five subcommands: `convert`, `relax`, `score`, `plip`, and `run`.
 
 ### Convert (structure to params)
 
@@ -90,6 +101,9 @@ ai-to-params relax --prefix my_complex --constraints theozyme.cst --cst-weight 1
 | `--constraints FILE` | Constraint file. Auto-detects plain Rosetta csts vs enzdes matcher csts (`CST::BEGIN` blocks). Enzdes files need REMARK 666 catalytic-residue headers in the input PDB. |
 | `--cst-weight FLOAT` | Weight applied to `atom_pair/angle/dihedral/coordinate_constraint` score terms when `--constraints` is used (default: 1.0). Constraints have no effect without this. |
 | `--no-coord-constraints` | Disable coordinate constraints |
+| `--plip` | Run PLIP on relaxed structures and append `plip_*` columns to the summary CSV |
+| `--plip-output FILE` | Optional PLIP-only CSV path (default: `{prefix}_plip.csv`) |
+| `--plip-mutation-resi N` | Optional protein residue number for mutation-site contact counts |
 | `--output-dir DIR` | Output directory (default: `.`) |
 
 When `--constraints` is provided, the relevant constraint score terms are turned on at `--cst-weight` and FastRelax is run with `ramp_down_constraints=False` so catalytic restraints survive the full relax ramp.
@@ -114,14 +128,47 @@ ai-to-params score --pdb complex.pdb --params L01.params,L02.params
 | `--pdb FILE` | Path to input PDB file (mutually exclusive with `--prefix`) |
 | `--params FILES` | Comma-separated .params files (required with `--pdb`) |
 | `--score-function` | Rosetta score function (default: `ref2015`) |
+| `--plip` | Run PLIP on the scored input structure and append `plip_*` columns to the score CSV |
+| `--plip-output FILE` | Optional PLIP-only CSV path (default: `{prefix}_plip.csv`) |
+| `--plip-mutation-resi N` | Optional protein residue number for mutation-site contact counts |
 | `--output-dir DIR` | Directory to write summary CSV (default: `.`) |
 
 Writes `{prefix}_score.csv` with total score and per-ligand interface energies.
+
+### PLIP Analysis
+
+Run PLIP interaction analysis without Rosetta relaxation/scoring:
+
+```bash
+# Analyze the cleaned complex from ai_to_params
+ai-to-params plip --prefix my_complex
+
+# Analyze relaxed structures from a previous run
+ai-to-params plip --prefix my_complex --relaxed-only
+
+# Analyze an explicit structure file
+ai-to-params plip --pdb complex.pdb --output complex_plip.csv
+```
+
+PLIP writes one row per analyzed structure with interaction counts, distance summaries, residue contact fingerprints, and optional mutation-site contact counts. PDB inputs are passed directly to PLIP; CIF/mmCIF inputs are converted to a temporary PDB first.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--prefix PREFIX` | Prefix for ai_to_params output |
+| `--pdb FILE`, `--structure FILE` | Explicit PDB/mmCIF/CIF input structure |
+| `--include-relaxed` | With `--prefix`, include `{prefix}_relaxed_*.pdb` plus `{prefix}.pdb` |
+| `--relaxed-only` | With `--prefix`, analyze only `{prefix}_relaxed_*.pdb` files |
+| `--mutation-resi N` | Optional protein residue number for mutation-site contact counts |
+| `--output FILE` | Output PLIP CSV path (default: `{prefix}_plip.csv`) |
+| `--output-dir DIR` | Directory for default output path |
 
 ### Full Pipeline (convert + relax)
 
 ```bash
 ai-to-params run -i input.cif -prefix output --nstruct 3
+ai-to-params run -i input.cif -prefix output --nstruct 3 --plip
 ```
 
 Accepts all options from both `convert` and `relax`.
@@ -149,6 +196,9 @@ ai-to-params relax --prefix my_complex --constraints theozyme.cst --cst-weight 0
 
 # Score a predicted complex without relaxation
 ai-to-params score --prefix my_complex
+
+# Run the full pipeline and PLIP interaction analysis
+ai-to-params run -i AF3_output.cif -prefix my_complex --nstruct 5 --plip
 ```
 
 ## Output Files
@@ -164,6 +214,10 @@ ai-to-params score --prefix my_complex
 
 ### From `score`
 - `{prefix}_score.csv` - Total score and per-ligand interface energies (no relaxation)
+
+### From `plip` or `--plip`
+- `{prefix}_plip.csv` - PLIP interaction counts, distance statistics, residue fingerprint JSON, and optional mutation-site contact counts
+- When `--plip` is used with `score`, `relax`, or `run`, PLIP metrics are also appended to the Rosetta summary as `plip_*` columns
 
 ### File Naming Strategy
 - **Filenames** use original ligand names from the CIF file (user-friendly)
@@ -200,6 +254,12 @@ Creates Rosetta-compatible `.params` files and cleaned PDB structures.
 - Per-residue energy decomposition for interface energy calculation
 - RMSD calculation relative to input structure
 - CSV summary with scores across all generated structures
+
+### 7. PLIP Analysis (optional)
+- Protein-ligand interaction counts for hydrogen bonds, hydrophobic contacts, salt bridges, pi-stacking, pi-cation, halogen bonds, water bridges, and metal complexes
+- Mean/min/max distance summaries where PLIP reports distances
+- Per-residue contact fingerprints encoded as JSON
+- Optional mutation-site contact summaries
 
 ## Ligand Processing Rules
 
@@ -271,6 +331,12 @@ Solution: Use `--clobber` flag to allow overwriting existing files
 ImportError: No module named 'pyrosetta'
 ```
 Solution: PyRosetta requires a license from UW. Install via `conda install pyrosetta` after configuring the conda channel.
+
+**PLIP Not Found**
+```
+ImportError: PLIP is required for PLIP analysis
+```
+Solution: activate an environment that already has PLIP installed, then rerun the PLIP command. `ai-to-params` does not activate a default PLIP environment for you.
 
 ### Bond Inference Issues
 If bond inference produces unexpected results, adjust the tolerance with `--bond-tolerance` (default: 0.45 A).
