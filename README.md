@@ -242,7 +242,7 @@ Uses RDKit's `DetermineBonds` for connectivity and bond order assignment (aromat
 Applies the complete Rosetta parameterization pipeline:
 - Atom typing (Rosetta and molecular mechanics types)
 - Partial charge assignment
-- Bond analysis and rotatable bond identification
+- Bond analysis and rotatable bond identification, written as `CHI` records (with `PROTON_CHI` sampling for hydroxyl/amine hydrogens) so Rosetta can minimize and repack ligand torsions
 - Internal coordinate generation
 - Fragment tree construction
 

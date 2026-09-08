@@ -938,8 +938,31 @@ def write_param_file(f, molfile, name, frag_id, base_confs, max_confs, amino_aci
         # i.e., assume sp2 if the H's grandparent has anything other than single bonds to it.
         return ((a.is_H and len([bnd for bnd in c.heavy_bonds if bnd.order != Bond.SINGLE]) > 0)
              or (d.is_H and len([bnd for bnd in b.heavy_bonds if bnd.order != Bond.SINGLE]) > 0))
-    print("  Skipping chi angle generation (complex tree analysis needed)")
+    # Do proton chi's first so we can use -ex1, -ex2, etc
+    sorted_bonds = list(bonds) # make a copy then sort in place
+    sorted_bonds.sort(key=lambda b: b.is_proton_chi, reverse=True)
+    num_H_confs = base_confs
+    for bond, a, b, c, d in rot_bond_iter(sorted_bonds):
+        if bond.is_proton_chi:
+            if is_sp2_proton(a, b, c, d): num_H_confs *= 6
+            else: num_H_confs *= 9
+    if num_H_confs > max_confs:
+        print("WARNING: skipping extra samples for proton chis; would give %i conformers" % num_H_confs)
     num_chis = 0
+    for bond, a, b, c, d in rot_bond_iter(sorted_bonds):
+        num_chis += 1
+        # "Direction" of chi definition appears not to matter,
+        # but we follow the convention of amino acids (root to tip)
+        f.write("CHI %i %-4s %-4s %-4s %-4s\n" % (num_chis, d.name, c.name, b.name, a.name))
+        if bond.is_proton_chi:
+            # Only expand proton chis with extra samples if doing so won't generate tens of thousands of confs.
+            if num_H_confs <= max_confs: extra = "1 20"
+            else: extra = "0"
+            if is_sp2_proton(a, b, c, d):
+                f.write("PROTON_CHI %i SAMPLES 2 0 180 EXTRA %s\n" % (num_chis, extra))
+            else:
+                f.write("PROTON_CHI %i SAMPLES 3 60 -60 180 EXTRA %s\n" % (num_chis, extra))
+    # Assign numbers to the connection points in this fragment
     num_conns = 0
     conn_nums = {}
     for a in atoms:
